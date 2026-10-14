@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { ArrowRight, Check, Clock3, Grid2X2, List, Mic, Moon, Play, Plus, RotateCcw, Sparkles, Square, Sun, Timer, TrendingUp, Upload, Volume2, VolumeX } from 'lucide-react'
+import { ArrowRight, Bot, Check, Clock3, Grid2X2, List, Mic, Moon, Play, Plus, RotateCcw, Send, Sparkles, Square, Sun, Timer, Trash2, TrendingUp, Upload, Volume2, VolumeX, X } from 'lucide-react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import './App.css'
 
@@ -43,6 +43,10 @@ function Icon({ name, size = 20 }) {
     volumeMute: VolumeX,
     sun: Sun,
     moon: Moon,
+    trash: Trash2,
+    bot: Bot,
+    send: Send,
+    close: X,
   }
   const IconComponent = icons[name]
   return <IconComponent aria-hidden="true" size={size} strokeWidth={1.8} />
@@ -82,6 +86,7 @@ function App() {
   const [latestEvaluation, setLatestEvaluation] = useState(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [deletingInterviewId, setDeletingInterviewId] = useState('')
   const [error, setError] = useState('')
   const [uploading, setUploading] = useState('')
   const [documentAnalysis, setDocumentAnalysis] = useState(null)
@@ -233,6 +238,20 @@ function App() {
       navigate(`${result.status === 'completed' ? 'results' : 'session'}/${id}`)
     } catch (openError) {
       setError(openError.message)
+    }
+  }
+
+  const deleteInterview = async (id) => {
+    if (!window.confirm('Delete this interview and its saved answers? This cannot be undone.')) return
+    setDeletingInterviewId(id)
+    setError('')
+    try {
+      await api(`/interviews/${id}`, { method: 'DELETE' })
+      await refreshData()
+    } catch (deleteError) {
+      setError(deleteError.message)
+    } finally {
+      setDeletingInterviewId('')
     }
   }
 
@@ -675,10 +694,11 @@ function App() {
           )}
 
           {page === 'history' && (
-            <section className="history-layout"><div className="history-heading"><div><p className="eyebrow">YOUR PRACTICE, ALL IN ONE PLACE</p><h1>My interviews</h1><p>Every session is saved locally so you can keep track of your progress.</p></div><button className="button button-primary" onClick={() => navigate('setup')}><Icon name="plus" size={18} />New interview</button></div><div className="panel history-panel">{interviews.length ? <><div className="history-table-head"><span>ROLE</span><span>TYPE</span><span>DATE</span><span>STATUS</span><span>SCORE</span><span /></div>{interviews.map((item) => <InterviewRow key={item.id} interview={item} onClick={() => openInterview(item.id)} detailed />)}</> : <EmptyState onStart={() => navigate('setup')} />}</div></section>
+            <section className="history-layout"><div className="history-heading"><div><p className="eyebrow">YOUR PRACTICE, ALL IN ONE PLACE</p><h1>My interviews</h1><p>Every session is saved locally so you can keep track of your progress.</p></div><button className="button button-primary" onClick={() => navigate('setup')}><Icon name="plus" size={18} />New interview</button></div><div className="panel history-panel">{interviews.length ? <><div className="history-table-head"><span>ROLE</span><span>TYPE</span><span>DATE</span><span>STATUS</span><span>SCORE</span><span /></div>{interviews.map((item) => <InterviewRow key={item.id} interview={item} onClick={() => openInterview(item.id)} onDelete={deleteInterview} deleting={deletingInterviewId === item.id} detailed />)}</> : <EmptyState onStart={() => navigate('setup')} />}</div></section>
           )}
         </div>
       </main>
+      <HelpChat />
     </div>
   )
 }
@@ -748,8 +768,101 @@ function ProgressPanel({ progress, dimensions, onOpen }) {
   )
 }
 
-function InterviewRow({ interview, onClick, detailed = false }) {
-  return <button className={detailed ? 'interview-row detailed' : 'interview-row'} onClick={onClick}><span className="role-cell"><span className="role-icon"><Icon name="spark" size={17} /></span><span><strong>{interview.role}</strong>{detailed && <small>{interview.experience_level}</small>}</span></span><span className="type-cell">{interview.interview_type}</span><span className="date-cell">{formatDate(interview.created_at)}</span><span className={interview.status === 'completed' ? 'status-badge complete' : 'status-badge in-progress'}>{interview.status === 'completed' ? 'Completed' : 'In progress'}</span><span className="score-cell">{interview.average_score == null ? '—' : `${interview.average_score}%`}</span><span className="row-arrow">↗</span></button>
+function InterviewRow({ interview, onClick, onDelete, deleting = false, detailed = false }) {
+  return (
+    <div className="interview-entry">
+      <button className={detailed ? 'interview-row detailed' : 'interview-row'} onClick={onClick}>
+        <span className="role-cell"><span className="role-icon"><Icon name="spark" size={17} /></span><span><strong>{interview.role}</strong>{detailed && <small>{interview.experience_level}</small>}</span></span>
+        <span className="type-cell">{interview.interview_type}</span>
+        <span className="date-cell">{formatDate(interview.created_at)}</span>
+        <span className={interview.status === 'completed' ? 'status-badge complete' : 'status-badge in-progress'}>{interview.status === 'completed' ? 'Completed' : 'In progress'}</span>
+        <span className="score-cell">{interview.average_score == null ? '—' : `${interview.average_score}%`}</span>
+        <span className="row-arrow">↗</span>
+      </button>
+      {onDelete && (
+        <button
+          className="delete-interview"
+          type="button"
+          onClick={() => onDelete(interview.id)}
+          disabled={deleting}
+          aria-label={`Delete ${interview.role} interview`}
+          title="Delete interview"
+        >
+          <Icon name="trash" size={16} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+function HelpChat() {
+  const [open, setOpen] = useState(false)
+  const [message, setMessage] = useState('')
+  const [messages, setMessages] = useState([
+    { role: 'assistant', content: 'Hi! I can help you use InterviewAI or practice interview questions. What would you like help with?' },
+  ])
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState('')
+  const latestMessageRef = useRef(null)
+
+  useEffect(() => {
+    latestMessageRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [messages, sending])
+
+  const sendMessage = async (event) => {
+    event.preventDefault()
+    const content = message.trim()
+    if (!content || sending) return
+    const history = messages.slice(-8).map(({ role, content: text }) => ({ role, content: text }))
+    setMessages((current) => [...current, { role: 'user', content }])
+    setMessage('')
+    setSending(true)
+    setError('')
+    try {
+      const result = await api('/help/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content, history }),
+      })
+      setMessages((current) => [...current, { role: 'assistant', content: result.answer }])
+    } catch (chatError) {
+      setError(chatError.message)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  return (
+    <div className="help-chat">
+      {open && (
+        <section className="help-chat-panel" id="help-chat-panel" role="dialog" aria-label="InterviewAI help chat">
+          <header className="help-chat-header">
+            <span className="help-chat-avatar"><Icon name="bot" size={18} /></span>
+            <span><strong>InterviewAI assistant</strong><small>Local AI · private to this device</small></span>
+            <button className="help-chat-close" type="button" onClick={() => setOpen(false)} aria-label="Close help chat"><Icon name="close" size={18} /></button>
+          </header>
+          <div className="help-chat-messages" aria-live="polite">
+            {messages.map((item, index) => (
+              <div className={`help-chat-message ${item.role}`} key={`${index}-${item.role}`}>
+                {item.content}
+              </div>
+            ))}
+            {sending && <div className="help-chat-message assistant chat-typing" role="status">Thinking…</div>}
+            <div ref={latestMessageRef} />
+          </div>
+          {error && <p className="help-chat-error" role="alert">{error}</p>}
+          <form className="help-chat-form" onSubmit={sendMessage}>
+            <label className="sr-only" htmlFor="help-chat-input">Ask the InterviewAI assistant</label>
+            <input id="help-chat-input" value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Ask for help…" maxLength={2000} disabled={sending} />
+            <button type="submit" disabled={sending || !message.trim()} aria-label="Send message"><Icon name="send" size={17} /></button>
+          </form>
+        </section>
+      )}
+      <button className="help-chat-toggle" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open} aria-controls="help-chat-panel">
+        <Icon name={open ? 'close' : 'bot'} size={19} /><span>{open ? 'Close help' : 'AI help'}</span>
+      </button>
+    </div>
+  )
 }
 
 function FileUpload({ id, kind, uploading, onFile }) {
