@@ -143,6 +143,24 @@ class DocumentAnalysisRequest(BaseModel):
     job_description: str = Field(default="", max_length=15_000)
 
 
+class HelpChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2_000)
+
+
+class HelpChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2_000)
+    history: list[HelpChatMessage] = Field(default_factory=list, max_length=8)
+
+    @field_validator("message")
+    @classmethod
+    def strip_message(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Message cannot be blank")
+        return value
+
+
 def row_to_interview(row: sqlite3.Row, connection: sqlite3.Connection) -> dict[str, Any]:
     answers = connection.execute(
         "SELECT question_index, answer, score, evaluation FROM answers WHERE interview_id = ? ORDER BY question_index",
@@ -224,6 +242,18 @@ async def test_llm() -> dict[str, Any]:
         return (await llm_service.test_response()).model_dump(mode="json")
     except LLMServiceError as error:
         raise_llm_http_error(error)
+
+
+@app.post("/api/help/chat")
+async def help_chat(request: HelpChatRequest) -> dict[str, str]:
+    try:
+        answer = await llm_service.answer_help_question(
+            request.message,
+            [message.model_dump() for message in request.history],
+        )
+    except LLMServiceError as error:
+        raise_llm_http_error(error)
+    return {"answer": answer}
 
 
 @app.post("/api/analyze-documents")
@@ -359,6 +389,14 @@ def get_interview(interview_id: str) -> dict[str, Any]:
     with connect_db() as connection:
         row = get_interview_or_404(connection, interview_id)
         return row_to_interview(row, connection)
+
+
+@app.delete("/api/interviews/{interview_id}", status_code=204)
+def delete_interview(interview_id: str) -> None:
+    with connect_db() as connection:
+        cursor = connection.execute("DELETE FROM interviews WHERE id = ?", (interview_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Interview not found")
 
 
 @app.post("/api/interviews/{interview_id}/answers")

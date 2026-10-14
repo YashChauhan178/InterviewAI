@@ -360,6 +360,88 @@ class InterviewApiTests(unittest.TestCase):
             self.assertIn("Ollama is not running", response.json()["detail"])
             self.assertEqual(client.get("/api/interviews").json(), [])
 
+    def test_delete_interview_removes_saved_answers_and_dashboard_metrics(self) -> None:
+        with (
+            patch.object(
+                main.llm_service,
+                "generate_interview",
+                new_callable=AsyncMock,
+                return_value=sample_interview(),
+            ),
+            TestClient(main.app) as client,
+        ):
+            interview = client.post(
+                "/api/interviews",
+                json={"role": "Python developer", "question_count": 3},
+            ).json()
+            with main.connect_db() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO answers
+                        (interview_id, question_index, answer, score, evaluation, created_at)
+                    VALUES (?, 0, ?, 80, ?, ?)
+                    """,
+                    (
+                        interview["id"],
+                        "I improved the API response time.",
+                        json.dumps(sample_evaluation().model_dump(mode="json")),
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+            deleted = client.delete(f"/api/interviews/{interview['id']}")
+            self.assertEqual(deleted.status_code, 204)
+            self.assertEqual(client.get("/api/interviews").json(), [])
+            self.assertEqual(client.get("/api/interviews/" + interview["id"]).status_code, 404)
+            self.assertEqual(client.get("/api/dashboard").json()["total_interviews"], 0)
+            with main.connect_db() as connection:
+                answer_count = connection.execute(
+                    "SELECT COUNT(*) FROM answers WHERE interview_id = ?",
+                    (interview["id"],),
+                ).fetchone()[0]
+            self.assertEqual(answer_count, 0)
+
+    def test_help_chat_uses_local_model_and_bounds_history(self) -> None:
+        history = [
+            {"role": "user", "content": "How do I create a practice session?"},
+            {"role": "assistant", "content": "Choose Start an interview from the overview."},
+        ]
+        with (
+            patch.object(
+                main.llm_service,
+                "answer_help_question",
+                new_callable=AsyncMock,
+                return_value="Choose My interviews to review saved sessions.",
+            ) as answer_help,
+            TestClient(main.app) as client,
+        ):
+            response = client.post(
+                "/api/help/chat",
+                json={"message": "Where can I see my history?", "history": history},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.json()["answer"],
+                "Choose My interviews to review saved sessions.",
+            )
+            answer_help.assert_awaited_once_with(
+                "Where can I see my history?",
+                history,
+            )
+            invalid_message = client.post(
+                "/api/help/chat",
+                json={"message": "   "},
+            )
+            self.assertEqual(invalid_message.status_code, 422)
+            excessive_history = client.post(
+                "/api/help/chat",
+                json={
+                    "message": "Help",
+                    "history": [{"role": "user", "content": "Help"}] * 9,
+                },
+            )
+            self.assertEqual(excessive_history.status_code, 422)
+
     def test_fallback_generation_source_is_saved_and_visible(self) -> None:
         fallback = GeneratedInterview(
             questions=sample_interview().questions,
@@ -962,6 +1044,34 @@ class OllamaServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.ok)
         self.assertEqual(result.model, "llama3.2:3b")
         self.assertEqual(requests[0].url.path, "/api/chat")
+
+    async def test_help_chat_sends_bounded_context_to_local_ollama(self) -> None:
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(
+                200,
+                json={"message": {"content": json.dumps({"answer": "Use the STAR method."})}},
+            )
+
+        service = OllamaService(
+            base_url="http://127.0.0.1",
+            model="llama3.2:3b",
+            transport=httpx.MockTransport(respond),
+        )
+        answer = await service.answer_help_question(
+            "How can I make an answer clearer?",
+            [{"role": "user", "content": "I have an interview tomorrow."}],
+        )
+
+        self.assertEqual(answer, "Use the STAR method.")
+        self.assertEqual(len(requests), 1)
+        payload = json.loads(requests[0].content)
+        self.assertEqual(requests[0].url.path, "/api/chat")
+        self.assertFalse(payload.get("tools"))
+        self.assertIn("I have an interview tomorrow.", payload["messages"][1]["content"])
+        self.assertIn("How can I make an answer clearer?", payload["messages"][1]["content"])
 
     async def test_ollama_timeout_returns_actionable_gateway_timeout(self) -> None:
         def timeout(_: httpx.Request) -> httpx.Response:

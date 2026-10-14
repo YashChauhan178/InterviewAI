@@ -275,6 +275,53 @@ class OllamaService:
             )
         return result
 
+    async def answer_help_question(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+    ) -> str:
+        conversation = [
+            {
+                "role": item["role"],
+                "content": item["content"][:2000],
+            }
+            for item in history[-8:]
+        ]
+        conversation.append({"role": "user", "content": message[:2000]})
+        prompt = (
+            "You are the helpful support assistant for InterviewAI, a local-first "
+            "mock-interview practice application. Answer the user's question clearly "
+            "and practically. Help with using the app, interview preparation, and "
+            "general career questions. Do not claim to perform actions in the app. "
+            "Verified app guidance: open My interviews from the left navigation, "
+            "select the trash icon beside a session, and confirm deletion; its saved "
+            "answers are deleted with it. Use the AI help button at the lower-right "
+            "of the app to open this chat. Interviews and chat requests use the "
+            "configured local Ollama model. "
+            "Do not request resumes, contact details, passwords, or secrets. If asked "
+            "about a feature you cannot verify, say so and suggest where to look. "
+            "Keep replies concise and use plain language.\n\nConversation:\n"
+            + json.dumps(conversation, ensure_ascii=False)
+            + "\n\nReturn your response as the answer field."
+        )
+        generated = await self._chat(
+            prompt,
+            {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+            "help-chat response",
+        )
+        answer = generated.get("answer")
+        if not isinstance(answer, str) or not answer.strip() or len(answer) > 4000:
+            raise LLMServiceError(
+                "The local model returned an invalid help-chat response. Please retry.",
+                status_code=502,
+                invalid_output=True,
+            )
+        return answer.strip()
+
     async def generate_interview(
         self,
         *,
