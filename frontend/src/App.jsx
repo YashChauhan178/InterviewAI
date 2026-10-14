@@ -466,7 +466,28 @@ function App() {
   }
 
   if (loading) {
-    return <div className="loading-screen"><span className="loader" />Preparing your workspace</div>
+    return (
+      <main className="startup-screen" data-theme={theme} aria-label="Starting InterviewAI">
+        <div className="startup-content">
+          <div className="startup-brand" aria-label="InterviewAI">
+            <span className="startup-mark"><Icon name="spark" size={24} /></span>
+            <span>Interview<span className="brand-ai">AI</span></span>
+          </div>
+          <div className="startup-orbit" aria-hidden="true">
+            <span className="startup-orbit-ring" />
+            <span className="startup-orbit-ring startup-orbit-ring-secondary" />
+            <span className="startup-orbit-core"><Icon name="spark" size={25} /></span>
+          </div>
+          <p className="startup-eyebrow">PRIVATE PRACTICE WORKSPACE</p>
+          <h1>Prepare with purpose.</h1>
+          <p className="startup-description">Loading your interview dashboard and local services.</p>
+          <div className="startup-progress" role="status" aria-live="polite">
+            <span className="startup-progress-track"><span /></span>
+            <span>Preparing your workspace</span>
+          </div>
+        </div>
+      </main>
+    )
   }
 
   const currentQuestion = interview?.questions[interview.current_index]
@@ -514,7 +535,7 @@ function App() {
           {page === 'dashboard' && (
             <>
               <section className="welcome-row">
-                <div><p className="eyebrow">{formatToday()}</p><h1>Your next opportunity<br />starts with practice.</h1><p className="welcome-copy">Build confidence one thoughtful answer at a time.</p></div>
+                <div><p className="eyebrow">{formatToday()}</p><h1>Build interview readiness<br />with deliberate practice.</h1><p className="welcome-copy">Practice role-specific questions and turn feedback into measurable progress.</p></div>
                 <button className="button button-primary" onClick={() => navigate('setup')}><Icon name="plus" size={19} />Start an interview</button>
               </section>
               <section className="stats-grid" aria-label="Practice statistics">
@@ -538,19 +559,19 @@ function App() {
                 <div className="panel focus-panel">
                   <div className="focus-icon"><Icon name="spark" size={24} /></div>
                   <p className="eyebrow">YOUR PRACTICE SPACE</p>
-                  <h2>Show up as your<br />most prepared self.</h2>
-                  <p>Practice role-specific questions, speak your answers out loud, and get useful feedback after every response.</p>
+                  <h2>Turn preparation<br />into performance.</h2>
+                  <p>Work through role-specific questions, practice aloud, and use structured feedback to strengthen every response.</p>
                   <div className="focus-benefits"><span><Icon name="check" size={15} />No cloud API bill</span><span><Icon name="check" size={15} />Private & local</span></div>
                   <button className="button button-dark" onClick={() => navigate('setup')}>Set up a practice <Icon name="arrow" size={17} /></button>
                 </div>
               </section>
-              <section className="tip-strip"><div className="tip-icon"><Icon name="spark" size={20} /></div><div><strong>A little structure goes a long way</strong><p>Try the STAR method: Situation, Task, Action, Result. Specific examples help your answers stand out.</p></div><span className="tip-tag">QUICK TIP</span></section>
+              <section className="tip-strip"><div className="tip-icon"><Icon name="spark" size={20} /></div><div><strong>Structure strengthens your answers</strong><p>Use the STAR method—Situation, Task, Action, Result—to explain your contribution with clarity and evidence.</p></div><span className="tip-tag">PRACTICE NOTE</span></section>
             </>
           )}
 
           {page === 'setup' && (
             <section className="setup-layout">
-              <div className="setup-heading"><button className="back-link" onClick={() => navigate('dashboard')}>← Back to overview</button><p className="eyebrow">MAKE IT YOURS</p><h1>Set up your interview</h1><p>We’ll tailor a focused practice session around the role you’re targeting.</p></div>
+              <div className="setup-heading"><button className="back-link" onClick={() => navigate('dashboard')}>← Back to overview</button><p className="eyebrow">INTERVIEW CONFIGURATION</p><h1>Configure your practice session</h1><p>Choose your target role and interview format. Add optional context to make questions more relevant.</p></div>
               {!llmStatus?.model_available && <div className="llm-notice" role="status"><Icon name="spark" size={17} /><span><strong>{llmStatus?.message || 'Checking that your local LLM is ready.'}</strong><small>{!llmStatus?.available ? 'Start Ollama, then refresh this page.' : `Run “ollama pull ${llmStatus?.model || 'llama3.2:3b'}” in PowerShell, then refresh this page.`} Interviews and answer feedback require the local model; your documents are not sent to a cloud provider.</small></span></div>}
               <form className="panel setup-form" onSubmit={startInterview}>
                 <div className="form-section"><div className="section-number">01</div><div className="form-section-content"><h2>The role</h2><p>Start with the position you’re preparing for.</p><label className="field-label" htmlFor="role">Target role <span>Required</span></label><input id="role" className="text-input" required minLength="2" maxLength="100" placeholder="e.g. Product Designer, Software Engineer" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} /><div className="two-fields"><label className="field-label">Experience level<select className="text-input" value={form.experience_level} onChange={(event) => setForm({ ...form, experience_level: event.target.value })}><option>Entry-level</option><option>Mid-level</option><option>Senior</option><option>Lead / Staff</option></select></label><label className="field-label">Interview style<select className="text-input" value={form.interview_type} onChange={(event) => setForm({ ...form, interview_type: event.target.value })}><option>Mixed</option><option>Technical</option><option>Behavioral</option></select></label></div><label className="field-label count-label">Questions <strong>{form.question_count}</strong></label><input className="range-input" type="range" min="3" max="10" value={form.question_count} onChange={(event) => setForm({ ...form, question_count: Number(event.target.value) })} /><div className="range-ends"><span>3 questions</span><span>10 questions</span></div></div></div>
@@ -736,7 +757,7 @@ function FileUpload({ id, kind, uploading, onFile }) {
 }
 
 function EmptyState({ onStart, compact = false }) {
-  return <div className={compact ? 'empty-state compact' : 'empty-state'}><div className="empty-icon"><Icon name="spark" size={22} /></div><h3>Your first interview is waiting.</h3><p>Choose a role and we’ll create a set of questions to get you started.</p><button className="button button-outline" onClick={onStart}>Set up your first interview <Icon name="arrow" size={16} /></button></div>
+  return <div className={compact ? 'empty-state compact' : 'empty-state'}><div className="empty-icon"><Icon name="spark" size={22} /></div><h3>Start your first practice interview</h3><p>Select a target role to generate a focused set of interview questions.</p><button className="button button-outline" onClick={onStart}>Configure interview <Icon name="arrow" size={16} /></button></div>
 }
 
 export default App
