@@ -1,7 +1,9 @@
 import json
 import tempfile
 import unittest
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -153,17 +155,41 @@ class InterviewApiTests(unittest.TestCase):
             self.assertEqual(saved_interview["answers"], [])
 
     def test_mcp_status_lists_project_tools(self) -> None:
-        with TestClient(main.app) as client:
+        tool_names = ["analyze_job_requirements", "compare_candidate_to_job"]
+        tools = SimpleNamespace(
+            tools=[
+                SimpleNamespace(name=name, description=f"Description for {name}")
+                for name in tool_names
+            ]
+        )
+        mcp_client = SimpleNamespace(list_tools=AsyncMock(return_value=tools))
+        connection_count = 0
+
+        @asynccontextmanager
+        async def fake_connect_mcp_server():
+            nonlocal connection_count
+            connection_count += 1
+            yield mcp_client
+
+        with (
+            patch.object(main, "connect_mcp_server", fake_connect_mcp_server),
+            patch.object(main, "_mcp_status_cache", None),
+            patch.object(main, "_mcp_status_cached_at", 0.0),
+            TestClient(main.app) as client,
+        ):
             response = client.get("/api/mcp/status")
+            cached_response = client.get("/api/mcp/status")
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(cached_response.status_code, 200)
         status = response.json()
         self.assertTrue(status["connected"])
         self.assertEqual(status["server"], "InterviewAI")
         self.assertEqual(
             {tool["name"] for tool in status["tools"]},
-            {"analyze_job_requirements", "compare_candidate_to_job"},
+            set(tool_names),
         )
+        self.assertEqual(connection_count, 1)
 
     def test_dashboard_returns_completed_score_progress_and_rubric_averages(self) -> None:
         with (
@@ -709,6 +735,7 @@ class OllamaServiceTests(unittest.IsolatedAsyncioTestCase):
             "Additional analysis from local InterviewAI MCP tools",
             requests[0]["messages"][1]["content"],
         )
+        self.assertEqual(requests[0]["options"]["num_predict"], 640)
         tool_message = next(
             message for message in requests[1]["messages"] if message["role"] == "tool"
         )
@@ -791,6 +818,14 @@ class OllamaServiceTests(unittest.IsolatedAsyncioTestCase):
             "llama3.2:3b",
         )
         self.assertIn("I interview users", recorded_requests[2].content.decode())
+        self.assertEqual(
+            json.loads(recorded_requests[1].content)["options"]["num_predict"],
+            640,
+        )
+        self.assertEqual(
+            json.loads(recorded_requests[2].content)["options"]["num_predict"],
+            700,
+        )
 
     async def test_follow_up_is_discarded_when_it_repeats_an_existing_question(self) -> None:
         evaluation = sample_evaluation().model_copy(
@@ -1070,6 +1105,7 @@ class OllamaServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = json.loads(requests[0].content)
         self.assertEqual(requests[0].url.path, "/api/chat")
         self.assertFalse(payload.get("tools"))
+        self.assertEqual(payload["options"]["num_predict"], 400)
         self.assertIn("I have an interview tomorrow.", payload["messages"][1]["content"])
         self.assertIn("How can I make an answer clearer?", payload["messages"][1]["content"])
 

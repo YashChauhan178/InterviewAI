@@ -10,7 +10,7 @@
 - **Voice practice:** Read questions aloud, record answers in the browser, and transcribe locally with Faster-Whisper. Typed answers remain available as a fallback.
 - **Persistent history:** Save questions, answers, rubrics, and feedback in SQLite; review score trends and delete an interview with its saved answers from My interviews.
 - **In-app AI help:** Ask the local Ollama model for guidance on using the app and preparing for interviews; recent chat context is bounded and is not persisted.
-- **Local AI and MCP:** Use Ollama and the project MCP tools on the same machine. No paid AI API key is needed.
+- **Local AI and MCP:** Use Ollama and the project MCP tools on the same machine. Interview generation reuses its MCP session, and successful tool-status checks are briefly cached to avoid redundant process startup. No paid AI API key is needed.
 - **Accessible presentation:** Responsive dashboard, light/dark themes, upload and API error messages, progress indicators, and keyboard focus states.
 
 ## Screenshots

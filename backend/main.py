@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import tempfile
+import time
 import uuid
 from collections.abc import Generator
 from contextlib import asynccontextmanager, contextmanager
@@ -33,9 +34,13 @@ BASE_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BASE_DIR / "interviewai.db"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024
+MCP_STATUS_CACHE_TTL_SECONDS = 30
 logger = logging.getLogger(__name__)
 llm_service = OllamaService()
 audio_transcriber = FasterWhisperTranscriber()
+_mcp_status_cache: dict[str, Any] | None = None
+_mcp_status_cached_at = 0.0
+_mcp_status_lock = asyncio.Lock()
 
 
 @contextmanager
@@ -218,22 +223,31 @@ async def llm_status() -> dict[str, Any]:
 
 @app.get("/api/mcp/status")
 async def mcp_status() -> dict[str, Any]:
-    try:
-        async with connect_mcp_server() as client:
-            tools = await client.list_tools()
-    except (McpError, OSError, RuntimeError) as error:
-        raise HTTPException(
-            status_code=503,
-            detail="The local InterviewAI MCP server is unavailable.",
-        ) from error
-    return {
-        "connected": True,
-        "server": "InterviewAI",
-        "tools": [
-            {"name": tool.name, "description": tool.description}
-            for tool in tools.tools
-        ],
-    }
+    global _mcp_status_cache, _mcp_status_cached_at
+    async with _mcp_status_lock:
+        if (
+            _mcp_status_cache is not None
+            and time.monotonic() - _mcp_status_cached_at < MCP_STATUS_CACHE_TTL_SECONDS
+        ):
+            return dict(_mcp_status_cache)
+        try:
+            async with connect_mcp_server() as client:
+                tools = await client.list_tools()
+        except (McpError, OSError, RuntimeError) as error:
+            raise HTTPException(
+                status_code=503,
+                detail="The local InterviewAI MCP server is unavailable.",
+            ) from error
+        _mcp_status_cache = {
+            "connected": True,
+            "server": "InterviewAI",
+            "tools": [
+                {"name": tool.name, "description": tool.description}
+                for tool in tools.tools
+            ],
+        }
+        _mcp_status_cached_at = time.monotonic()
+        return dict(_mcp_status_cache)
 
 
 @app.get("/api/llm/test")
@@ -246,10 +260,14 @@ async def test_llm() -> dict[str, Any]:
 
 @app.post("/api/help/chat")
 async def help_chat(request: HelpChatRequest) -> dict[str, str]:
+    history: list[dict[str, str]] = [
+        {"role": message.role, "content": message.content}
+        for message in request.history
+    ]
     try:
         answer = await llm_service.answer_help_question(
             request.message,
-            [message.model_dump() for message in request.history],
+            history,
         )
     except LLMServiceError as error:
         raise_llm_http_error(error)
