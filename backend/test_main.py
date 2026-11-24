@@ -1,4 +1,7 @@
 import json
+import hashlib
+import hmac
+import os
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
@@ -56,10 +59,29 @@ class InterviewApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.original_database_path = main.DATABASE_PATH
+        self.original_database_backend = os.environ.get("INTERVIEWAI_DB_BACKEND")
+        self.original_auth_override = main.app.dependency_overrides.get(main.require_current_user)
+        os.environ["INTERVIEWAI_DB_BACKEND"] = "sqlite"
         main.DATABASE_PATH = Path(self.temporary_directory.name) / "test.db"
+        main.app.dependency_overrides[main.require_current_user] = lambda: {
+            "id": "test-user",
+            "email": "test@example.invalid",
+            "name": "Test Student",
+            "organization_id": "test-organization",
+            "organization_role": "owner",
+            "is_personal": True,
+        }
 
     def tearDown(self) -> None:
         main.DATABASE_PATH = self.original_database_path
+        if self.original_database_backend is None:
+            os.environ.pop("INTERVIEWAI_DB_BACKEND", None)
+        else:
+            os.environ["INTERVIEWAI_DB_BACKEND"] = self.original_database_backend
+        if self.original_auth_override is None:
+            main.app.dependency_overrides.pop(main.require_current_user, None)
+        else:
+            main.app.dependency_overrides[main.require_current_user] = self.original_auth_override
         self.temporary_directory.cleanup()
 
     def test_interview_flow_uses_llm_results_and_persists_feedback(self) -> None:
@@ -84,6 +106,10 @@ class InterviewApiTests(unittest.TestCase):
                     "role": "Python developer",
                     "experience_level": "Senior",
                     "interview_type": "Technical",
+                    "student_name": "Avery Student",
+                    "student_identifier": "STU-1042",
+                    "question_category": "Coding Rounds & Interview",
+                    "difficulty": "Hard",
                     "question_count": 3,
                     "resume_text": "Built Python APIs with FastAPI.",
                     "job_description": "Python, FastAPI, and data systems.",
@@ -94,6 +120,10 @@ class InterviewApiTests(unittest.TestCase):
             self.assertEqual(len(interview["questions"]), 3)
             self.assertEqual(len(interview["question_details"]), 3)
             self.assertEqual(interview["generation_source"], "ollama")
+            self.assertEqual(interview["student_name"], "Avery Student")
+            self.assertEqual(interview["student_identifier"], "STU-1042")
+            self.assertEqual(interview["question_category"], "Coding Rounds & Interview")
+            self.assertEqual(interview["difficulty"], "Hard")
             self.assertEqual(
                 interview["question_details"][0]["suggested_answer"],
                 sample_interview().questions[0].suggested_answer,
@@ -101,6 +131,8 @@ class InterviewApiTests(unittest.TestCase):
             generate.assert_awaited_once()
             self.assertEqual(generate.await_args.kwargs["resume_text"], "Built Python APIs with FastAPI.")
             self.assertEqual(generate.await_args.kwargs["job_description"], "Python, FastAPI, and data systems.")
+            self.assertEqual(generate.await_args.kwargs["question_category"], "Coding Rounds & Interview")
+            self.assertEqual(generate.await_args.kwargs["difficulty"], "Hard")
 
             answer_response = client.post(
                 f"/api/interviews/{interview['id']}/answers",
@@ -117,6 +149,224 @@ class InterviewApiTests(unittest.TestCase):
             self.assertEqual(reopened["answers"][0]["evaluation"]["score"], 80)
             self.assertEqual(reopened["question_details"][0]["competency"], "Problem solving")
             self.assertEqual(client.get("/api/dashboard").json()["total_interviews"], 1)
+            self.assertEqual(client.get("/api/dashboard").json()["recent_interviews"][0]["student_identifier"], "STU-1042")
+
+    def test_storage_status_reports_the_selected_database(self) -> None:
+        with TestClient(main.app) as client:
+            response = client.get("/api/storage/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["engine"], "SQLite")
+        self.assertEqual(response.json()["database"], "test.db")
+
+    def test_interview_api_rejects_anonymous_requests(self) -> None:
+        test_override = main.app.dependency_overrides.pop(main.require_current_user)
+        try:
+            with TestClient(main.app) as client:
+                response = client.get("/api/interviews")
+        finally:
+            main.app.dependency_overrides[main.require_current_user] = test_override
+
+        self.assertEqual(response.status_code, 401)
+
+    def test_pro_plan_remains_disabled_without_a_webhook_secret(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "RAZORPAY_KEY_ID": "test-key",
+                "RAZORPAY_KEY_SECRET": "test-secret",
+                "RAZORPAY_PRO_PLAN_ID": "plan_test",
+            },
+            clear=True,
+        ):
+            response = main.billing_plans()
+
+        self.assertFalse(response["student"][1]["configured"])
+        self.assertEqual(response["student"][1]["amount"], 900)
+        self.assertEqual(response["student"][1]["currency"], "USD")
+
+    def test_razorpay_webhook_verifies_signature_and_updates_subscription(self) -> None:
+        webhook_secret = "test-webhook-secret"
+        subscription_id = "sub_test_123"
+        event = {
+            "event": "subscription.activated",
+            "payload": {"subscription": {"entity": {"id": subscription_id, "current_end": 1_800_000_000}}},
+        }
+        body = json.dumps(event).encode()
+        signature = hmac.new(webhook_secret.encode(), body, hashlib.sha256).hexdigest()
+
+        with (
+            patch.dict(os.environ, {"RAZORPAY_WEBHOOK_SECRET": webhook_secret}),
+            TestClient(main.app) as client,
+        ):
+            with main.connect_db() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO billing_subscriptions
+                        (id, owner_type, owner_id, provider_subscription_id, plan_id, status,
+                         current_period_end, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "billing-test-id",
+                        "student",
+                        "test-user",
+                        subscription_id,
+                        "plan_test",
+                        "created",
+                        None,
+                        "2026-01-01T00:00:00+00:00",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+
+            invalid = client.post(
+                "/api/billing/webhook",
+                content=body,
+                headers={"x-razorpay-signature": "invalid"},
+            )
+            self.assertEqual(invalid.status_code, 400)
+
+            response = client.post(
+                "/api/billing/webhook",
+                content=body,
+                headers={"x-razorpay-signature": signature},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"received": True})
+
+        with main.connect_db() as connection:
+            subscription = connection.execute(
+                "SELECT status, current_period_end FROM billing_subscriptions WHERE provider_subscription_id = ?",
+                (subscription_id,),
+            ).fetchone()
+        self.assertEqual(subscription["status"], "active")
+        self.assertIsNotNone(subscription["current_period_end"])
+
+    def test_billing_checkout_reuses_a_pending_provider_checkout(self) -> None:
+        user = {
+            "id": "test-user",
+            "email": "test@example.invalid",
+            "name": "Test Student",
+            "organization_id": "test-organization",
+            "organization_role": "owner",
+            "is_personal": True,
+        }
+        original_override = main.app.dependency_overrides.get(main.require_current_user)
+        main.app.dependency_overrides[main.require_current_user] = lambda: user
+        try:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "RAZORPAY_KEY_ID": "test-key",
+                        "RAZORPAY_KEY_SECRET": "test-secret",
+                        "RAZORPAY_PRO_PLAN_ID": "plan_test",
+                        "RAZORPAY_WEBHOOK_SECRET": "test-webhook-secret",
+                    },
+                ),
+                TestClient(main.app) as client,
+            ):
+                with main.connect_db() as connection:
+                    connection.execute(
+                        """
+                        INSERT INTO billing_subscriptions
+                            (id, owner_type, owner_id, provider_subscription_id, plan_id, status,
+                             checkout_url, current_period_end, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "billing-pending-id",
+                            "student",
+                            user["id"],
+                            "sub_pending_test",
+                            "plan_test",
+                            "created",
+                            "https://checkout.razorpay.com/test",
+                            None,
+                            "2026-01-01T00:00:00+00:00",
+                            "2026-01-01T00:00:00+00:00",
+                        ),
+                    )
+
+                response = client.post("/api/billing/checkout")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                response.json(),
+                {"checkout_url": "https://checkout.razorpay.com/test"},
+            )
+        finally:
+            if original_override is None:
+                main.app.dependency_overrides.pop(main.require_current_user, None)
+            else:
+                main.app.dependency_overrides[main.require_current_user] = original_override
+
+    def test_workspace_invites_can_only_be_redeemed_once(self) -> None:
+        organization_id = "company-test-organization"
+        with TestClient(main.app) as client:
+            with main.connect_db() as connection:
+                for user_id, email in (
+                    ("test-user", "owner@example.invalid"),
+                    ("invited-user", "student@example.invalid"),
+                ):
+                    connection.execute(
+                        "INSERT INTO users (id, email, name, created_at) VALUES (?, ?, ?, ?)",
+                        (user_id, email, user_id, "2026-01-01T00:00:00+00:00"),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO organizations (id, name, slug, [plan], created_by, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        organization_id,
+                        "Test Company",
+                        "test-company-invites",
+                        "free",
+                        "test-user",
+                        "2026-01-01T00:00:00+00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO organization_memberships
+                        (organization_id, user_id, role, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (organization_id, "test-user", "owner", "2026-01-01T00:00:00+00:00"),
+                )
+
+            invitation = client.post(f"/api/organizations/{organization_id}/invites")
+            self.assertEqual(invitation.status_code, 200)
+            invite_token = invitation.json()["invite_token"]
+            original_override = main.app.dependency_overrides[main.require_current_user]
+            main.app.dependency_overrides[main.require_current_user] = lambda: {
+                "id": "invited-user",
+                "email": "student@example.invalid",
+                "name": "Invited Student",
+                "organization_id": "student-personal-workspace",
+                "organization_role": "owner",
+                "is_personal": True,
+            }
+            try:
+                joined = client.post("/api/organizations/join", json={"invite_token": invite_token})
+                reused = client.post("/api/organizations/join", json={"invite_token": invite_token})
+            finally:
+                main.app.dependency_overrides[main.require_current_user] = original_override
+
+        self.assertEqual(joined.status_code, 200)
+        self.assertEqual(joined.json()["organization_id"], organization_id)
+        self.assertEqual(reused.status_code, 400)
+        with main.connect_db() as connection:
+            membership = connection.execute(
+                """
+                SELECT role FROM organization_memberships
+                WHERE organization_id = ? AND user_id = ?
+                """,
+                (organization_id, "invited-user"),
+            ).fetchone()
+        self.assertEqual(membership["role"], "student")
 
     def test_answer_submission_cannot_skip_unanswered_questions(self) -> None:
         with (
@@ -1012,6 +1262,19 @@ class OllamaServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(interview.questions), 3)
         self.assertEqual(len({question.question for question in interview.questions}), 3)
         self.assertTrue(all("Junior Software Engineer" in question.question for question in interview.questions))
+
+    def test_fallback_questions_match_the_selected_practice_track(self) -> None:
+        context = {"skills": ["Python"]}
+        job_context = {"required_skills": ["Python"]}
+        aptitude = OllamaService._fallback_interview(
+            "Analyst", "Entry-level", "Mixed", 3, context, job_context, "Basic Aptitude", "Easy"
+        )
+        reasoning = OllamaService._fallback_interview(
+            "Analyst", "Entry-level", "Mixed", 3, context, job_context, "Logical Reasoning", "Medium"
+        )
+
+        self.assertIn("requests", aptitude.questions[0].question)
+        self.assertIn("sequence", reasoning.questions[0].question.lower())
 
     async def test_model_request_omits_resume_contact_details(self) -> None:
         recorded_prompts: list[str] = []

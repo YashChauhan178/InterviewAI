@@ -7,8 +7,12 @@ const API_BASE = '/api'
 
 const initialForm = {
   role: '',
+  student_name: 'Student',
+  student_identifier: '',
   experience_level: 'Mid-level',
   interview_type: 'Mixed',
+  question_category: 'Coding Rounds & Interview',
+  difficulty: 'Medium',
   question_count: 5,
   resume_text: '',
   job_description: '',
@@ -18,7 +22,9 @@ async function api(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options)
   const data = await response.json().catch(() => ({}))
   if (!response.ok) {
-    throw new Error(data.detail || `Request failed (${response.status})`)
+    const requestError = new Error(data.detail || `Request failed (${response.status})`)
+    requestError.status = response.status
+    throw requestError
   }
   return data
 }
@@ -79,6 +85,10 @@ function App() {
   const [interviews, setInterviews] = useState([])
   const [llmStatus, setLlmStatus] = useState(null)
   const [mcpStatus, setMcpStatus] = useState(null)
+  const [storageStatus, setStorageStatus] = useState(null)
+  const [user, setUser] = useState(null)
+  const [authProviders, setAuthProviders] = useState([])
+  const [planCatalog, setPlanCatalog] = useState(null)
   const [interview, setInterview] = useState(null)
   const interviewRef = useRef(interview)
   const [form, setForm] = useState(initialForm)
@@ -97,6 +107,8 @@ function App() {
   const [recordingSeconds, setRecordingSeconds] = useState(0)
   const [transcribing, setTranscribing] = useState(false)
   const [microphoneError, setMicrophoneError] = useState('')
+  const [codeLanguage, setCodeLanguage] = useState('Python')
+  const codeGutterRef = useRef(null)
   const [speechMuted, setSpeechMuted] = useState(false)
   const [availableVoices, setAvailableVoices] = useState([])
   const [selectedVoiceURI, setSelectedVoiceURI] = useState('')
@@ -183,12 +195,33 @@ function App() {
 
   useEffect(() => {
     let active = true
-    Promise.all([api('/dashboard'), api('/interviews'), api('/llm/status')])
-      .then(([summary, sessions, modelStatus]) => {
+    Promise.all([api('/auth/providers'), api('/billing/plans')])
+      .then(([providerStatus, plans]) => {
         if (!active) return
-        setDashboard(summary)
-        setInterviews(sessions)
-        setLlmStatus(modelStatus)
+        setAuthProviders(providerStatus.providers)
+        setPlanCatalog(plans)
+        return api('/auth/me')
+          .then((authenticatedUser) => {
+            if (!active) return null
+            setUser(authenticatedUser)
+            return Promise.all([api('/dashboard'), api('/interviews'), api('/llm/status'), api('/storage/status')])
+          })
+          .then((results) => {
+            if (!active || !results) return
+            const [summary, sessions, modelStatus, databaseStatus] = results
+            setDashboard(summary)
+            setInterviews(sessions)
+            setLlmStatus(modelStatus)
+            setStorageStatus(databaseStatus)
+          })
+          .catch((loadError) => {
+            if (!active) return
+            if (loadError.status === 401) {
+              setUser(null)
+              return
+            }
+            setError(loadError.message)
+          })
       })
       .catch((loadError) => {
         if (active) setError(loadError.message)
@@ -279,6 +312,46 @@ function App() {
     }
   }
 
+  const signOut = async () => {
+    try {
+      await api('/auth/logout', { method: 'POST' })
+      setUser(null)
+      setDashboard(null)
+      setInterviews([])
+      navigate('dashboard')
+    } catch (logoutError) {
+      setError(logoutError.message)
+    }
+  }
+
+  const startCheckout = async () => {
+    setSaving(true)
+    setError('')
+    try {
+      const checkout = await api('/billing/checkout', { method: 'POST' })
+      window.location.assign(checkout.checkout_url)
+    } catch (checkoutError) {
+      setError(checkoutError.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const cancelSubscription = async () => {
+    if (!window.confirm('Schedule cancellation at the end of the current billing period?')) return
+    setSaving(true)
+    setError('')
+    try {
+      await api('/billing/cancel', { method: 'POST' })
+      setError('Cancellation is scheduled. Pro stays active until the billing period ends.')
+      setUser(await api('/auth/me'))
+    } catch (cancelError) {
+      setError(cancelError.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const uploadDocument = async (event, kind) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -328,7 +401,10 @@ function App() {
       const result = await api(`/interviews/${interview.id}/answers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question_index: interview.current_index, answer: answer.trim() }),
+        body: JSON.stringify({
+          question_index: interview.current_index,
+          answer: isCodingTrack ? `Language: ${codeLanguage}\n\n${answer.trim()}` : answer.trim(),
+        }),
       })
       setInterview(result.interview)
       setLatestEvaluation(result.evaluation)
@@ -509,8 +585,14 @@ function App() {
     )
   }
 
+  if (!user) {
+    return <AuthPage providers={authProviders} error={error} onDismiss={() => setError('')} />
+  }
+
   const currentQuestion = interview?.questions[interview.current_index]
   const currentQuestionDetail = interview?.question_details?.[interview.current_index]
+  const isCodingTrack = interview?.question_category === 'Coding Rounds & Interview'
+  const codeLineCount = Math.max(12, answer.split('\n').length)
   const answeredCount = interview?.answers.length || 0
   const scores = interview?.answers.map((item) => item.score) || []
   const averageScore = scores.length ? Math.round(scores.reduce((total, score) => total + score, 0) / scores.length) : 0
@@ -533,17 +615,19 @@ function App() {
         <nav className="side-nav" aria-label="Main navigation">
           <button className={page === 'dashboard' || page === 'setup' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('dashboard')}><Icon name="grid" />Overview</button>
           <button className={page === 'history' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('history')}><Icon name="list" />My interviews<span className="nav-count">{interviews.length}</span></button>
+          <button className={page === 'billing' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('billing')}><Icon name="spark" />Plans & billing</button>
+          <button className={page === 'company' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('company')}><Icon name="grid" />Company workspace</button>
         </nav>
         <div className="sidebar-bottom">
           <div className="local-card"><span className="local-dot" /><div><strong>Private by design</strong><small>Your practice stays on this device</small></div></div>
-          <div className="profile"><div className="avatar">Y</div><div><strong>Your workspace</strong><small>Local account</small></div><span className="profile-menu">···</span></div>
+          <div className="profile"><div className="avatar">{user.name?.slice(0, 1) || 'S'}</div><div><strong>{user.name}</strong><small>{user.plan === 'pro' ? 'Pro member' : 'Free member'}</small></div><button className="profile-menu" type="button" onClick={signOut} title="Sign out" aria-label="Sign out">↪</button></div>
         </div>
       </aside>
 
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb">Workspace <span>/</span> <strong>{page === 'dashboard' ? 'Overview' : page === 'setup' ? 'New interview' : page === 'session' ? 'Practice session' : page === 'results' ? 'Session results' : 'My interviews'}</strong></div>
-          <div className="topbar-right"><span className={`api-status ${llmStatus?.model_available ? 'ready' : 'not-ready'}`} title={llmStatus?.model || 'Ollama'}><span />{modelStatusLabel}</span><span className={`api-status mcp-status ${mcpStatus?.connected ? 'ready' : 'not-ready'}`} title={mcpStatus?.connected ? mcpStatus.tools?.map((tool) => tool.name).join(', ') : mcpStatus?.error || 'Checking MCP server'}><span />{mcpStatus?.connected ? 'MCP connected' : 'MCP offline'}</span><button className="theme-toggle" type="button" onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}><Icon name={theme === 'light' ? 'moon' : 'sun'} size={17} /></button><div className="top-avatar">Y</div></div>
+          <div className="topbar-right"><span className={`api-status ${llmStatus?.model_available ? 'ready' : 'not-ready'}`} title={llmStatus?.model || 'Ollama'}><span />{modelStatusLabel}</span><span className="api-status storage-status" title={storageStatus?.database || 'Interview database'}><span />{storageStatus?.engine || 'Database'}</span><span className={`api-status mcp-status ${mcpStatus?.connected ? 'ready' : 'not-ready'}`} title={mcpStatus?.connected ? mcpStatus.tools?.map((tool) => tool.name).join(', ') : mcpStatus?.error || 'Checking MCP server'}><span />{mcpStatus?.connected ? 'MCP connected' : 'MCP offline'}</span><button className="theme-toggle" type="button" onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`}><Icon name={theme === 'light' ? 'moon' : 'sun'} size={17} /></button><div className="top-avatar" title={user.email}>{user.name?.slice(0, 1) || 'S'}</div></div>
         </header>
 
         <div className="page-content">
@@ -593,9 +677,58 @@ function App() {
               <div className="setup-heading"><button className="back-link" onClick={() => navigate('dashboard')}>← Back to overview</button><p className="eyebrow">INTERVIEW CONFIGURATION</p><h1>Configure your practice session</h1><p>Choose your target role and interview format. Add optional context to make questions more relevant.</p></div>
               {!llmStatus?.model_available && <div className="llm-notice" role="status"><Icon name="spark" size={17} /><span><strong>{llmStatus?.message || 'Checking that your local LLM is ready.'}</strong><small>{!llmStatus?.available ? 'Start Ollama, then refresh this page.' : `Run “ollama pull ${llmStatus?.model || 'llama3.2:3b'}” in PowerShell, then refresh this page.`} Interviews and answer feedback require the local model; your documents are not sent to a cloud provider.</small></span></div>}
               <form className="panel setup-form" onSubmit={startInterview}>
-                <div className="form-section"><div className="section-number">01</div><div className="form-section-content"><h2>The role</h2><p>Start with the position you’re preparing for.</p><label className="field-label" htmlFor="role">Target role <span>Required</span></label><input id="role" className="text-input" required minLength="2" maxLength="100" placeholder="e.g. Product Designer, Software Engineer" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} /><div className="two-fields"><label className="field-label">Experience level<select className="text-input" value={form.experience_level} onChange={(event) => setForm({ ...form, experience_level: event.target.value })}><option>Entry-level</option><option>Mid-level</option><option>Senior</option><option>Lead / Staff</option></select></label><label className="field-label">Interview style<select className="text-input" value={form.interview_type} onChange={(event) => setForm({ ...form, interview_type: event.target.value })}><option>Mixed</option><option>Technical</option><option>Behavioral</option></select></label></div><label className="field-label count-label">Questions <strong>{form.question_count}</strong></label><input className="range-input" type="range" min="3" max="10" value={form.question_count} onChange={(event) => setForm({ ...form, question_count: Number(event.target.value) })} /><div className="range-ends"><span>3 questions</span><span>10 questions</span></div></div></div>
-                <div className="form-section"><div className="section-number">02</div><div className="form-section-content"><h2>Add context <span className="optional-label">OPTIONAL</span></h2><p>Give your practice a personal touch with a resume or job description.</p><label className="field-label" htmlFor="resume">Resume</label><FileUpload id="resume" kind="resume" uploading={uploading} onFile={(event) => uploadDocument(event, 'resume')} /><textarea id="resume" className="text-input context-input" placeholder="Or paste your resume text here..." maxLength="30000" value={form.resume_text} onChange={(event) => { setForm({ ...form, resume_text: event.target.value }); setDocumentAnalysis(null) }} /><label className="field-label" htmlFor="job-description">Job description</label><FileUpload id="job-description" kind="job_description" uploading={uploading} onFile={(event) => uploadDocument(event, 'job_description')} /><textarea id="job-description" className="text-input context-input" placeholder="Or paste the job description here..." maxLength="15000" value={form.job_description} onChange={(event) => { setForm({ ...form, job_description: event.target.value }); setDocumentAnalysis(null) }} /><button className="button button-outline document-analysis-button" type="button" onClick={analyzeDocuments} disabled={analyzingDocuments || (!form.resume_text.trim() && !form.job_description.trim())}>{analyzingDocuments ? 'Analyzing requirements…' : 'Compare resume with job requirements'}</button>{documentAnalysis && <div className="document-analysis" role="status"><strong>Role fit snapshot</strong><div><span>Matching skills</span><b>{documentAnalysis.matched_skills.length ? documentAnalysis.matched_skills.join(', ') : 'No direct matches detected'}</b></div><div><span>Skills to develop</span><b>{documentAnalysis.missing_skills.length ? documentAnalysis.missing_skills.join(', ') : 'No additional listed skills detected'}</b></div>{documentAnalysis.minimum_experience_years != null && <div><span>Experience requested</span><b>{documentAnalysis.minimum_experience_years}+ years</b></div>}</div>}<p className="privacy-note"><Icon name="check" size={15} /> Documents are parsed locally and used only to tailor this session.</p><p className="privacy-note">Audio is recorded and transcribed locally; use the text answer option if microphone access is unavailable.</p></div></div>
-                <div className="setup-footer"><span>Ready when you are. Your practice is saved on this device.</span><button className="button button-primary" disabled={saving || Boolean(uploading)} type="submit">{saving ? 'Preparing…' : 'Begin interview'}<Icon name="arrow" size={17} /></button></div>
+                <div className="form-section">
+                  <div className="section-number">01</div>
+                  <div className="form-section-content">
+                    <h2>Student & role</h2>
+                    <p>Save this attempt to a student record, then choose the role you are targeting.</p>
+                    <div className="two-fields">
+                      <label className="field-label" htmlFor="student-name">Student name<input id="student-name" className="text-input" required minLength="2" maxLength="120" value={form.student_name} onChange={(event) => setForm({ ...form, student_name: event.target.value })} /></label>
+                      <label className="field-label" htmlFor="student-identifier">Student ID <span>Optional</span><input id="student-identifier" className="text-input" maxLength="100" placeholder="e.g. STU-1042" value={form.student_identifier} onChange={(event) => setForm({ ...form, student_identifier: event.target.value })} /></label>
+                    </div>
+                    <label className="field-label" htmlFor="role">Target role <span>Required</span></label>
+                    <input id="role" className="text-input" required minLength="2" maxLength="100" placeholder="e.g. Product Designer, Software Engineer" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} />
+                    <div className="two-fields">
+                      <label className="field-label">Experience level<select className="text-input" value={form.experience_level} onChange={(event) => setForm({ ...form, experience_level: event.target.value })}><option>Entry-level</option><option>Mid-level</option><option>Senior</option><option>Lead / Staff</option></select></label>
+                      <label className="field-label">Interview style<select className="text-input" value={form.interview_type} onChange={(event) => setForm({ ...form, interview_type: event.target.value })}><option>Mixed</option><option>Technical</option><option>Behavioral</option></select></label>
+                    </div>
+                    <label className="field-label">Practice track</label>
+                    <div className="track-grid" role="group" aria-label="Choose a question category">
+                      {[
+                        ['Basic Aptitude', 'Quantitative problems, percentages, and applied math.'],
+                        ['Logical Reasoning', 'Sequences, deduction, probability, and clear reasoning.'],
+                        ['Coding Rounds & Interview', 'Algorithm challenges with a focused code workspace.'],
+                      ].map(([category, description], index) => (
+                        <button key={category} className={`track-card ${form.question_category === category ? 'selected' : ''}`} type="button" aria-pressed={form.question_category === category} onClick={() => setForm({ ...form, question_category: category })}>
+                          <span className="track-index">0{index + 1}</span><strong>{category}</strong><small>{description}</small>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="two-fields">
+                      <label className="field-label">Difficulty<select className="text-input" value={form.difficulty} onChange={(event) => setForm({ ...form, difficulty: event.target.value })}><option>Easy</option><option>Medium</option><option>Hard</option></select></label>
+                      <label className="field-label count-label">Questions <strong>{form.question_count}</strong><input className="range-input" type="range" min="3" max="10" value={form.question_count} onChange={(event) => setForm({ ...form, question_count: Number(event.target.value) })} /></label>
+                    </div>
+                    <div className="range-ends"><span>3 questions</span><span>10 questions</span></div>
+                  </div>
+                </div>
+                <div className="form-section">
+                  <div className="section-number">02</div>
+                  <div className="form-section-content">
+                    <h2>Add context <span className="optional-label">OPTIONAL</span></h2>
+                    <p>Make questions more relevant with a resume or job description.</p>
+                    <label className="field-label" htmlFor="resume">Resume</label>
+                    <FileUpload id="resume" kind="resume" uploading={uploading} onFile={(event) => uploadDocument(event, 'resume')} />
+                    <textarea id="resume" className="text-input context-input" placeholder="Or paste your resume text here..." maxLength="30000" value={form.resume_text} onChange={(event) => { setForm({ ...form, resume_text: event.target.value }); setDocumentAnalysis(null) }} />
+                    <label className="field-label" htmlFor="job-description">Job description</label>
+                    <FileUpload id="job-description" kind="job_description" uploading={uploading} onFile={(event) => uploadDocument(event, 'job_description')} />
+                    <textarea id="job-description" className="text-input context-input" placeholder="Or paste the job description here..." maxLength="15000" value={form.job_description} onChange={(event) => { setForm({ ...form, job_description: event.target.value }); setDocumentAnalysis(null) }} />
+                    <button className="button button-outline document-analysis-button" type="button" onClick={analyzeDocuments} disabled={analyzingDocuments || (!form.resume_text.trim() && !form.job_description.trim())}>{analyzingDocuments ? 'Analyzing requirements…' : 'Compare resume with job requirements'}</button>
+                    {documentAnalysis && <div className="document-analysis" role="status"><strong>Role fit snapshot</strong><div><span>Matching skills</span><b>{documentAnalysis.matched_skills.length ? documentAnalysis.matched_skills.join(', ') : 'No direct matches detected'}</b></div><div><span>Skills to develop</span><b>{documentAnalysis.missing_skills.length ? documentAnalysis.missing_skills.join(', ') : 'No additional listed skills detected'}</b></div>{documentAnalysis.minimum_experience_years != null && <div><span>Experience requested</span><b>{documentAnalysis.minimum_experience_years}+ years</b></div>}</div>}
+                    <p className="privacy-note"><Icon name="check" size={15} /> Student name, optional ID, questions, and answers are stored in the configured database.</p>
+                    <p className="privacy-note"><Icon name="check" size={15} /> Documents are parsed locally and used only to tailor this session.</p>
+                  </div>
+                </div>
+                <div className="setup-footer"><span>Ready when you are. Every attempt is saved to your student record.</span><button className="button button-primary" disabled={saving || Boolean(uploading)} type="submit">{saving ? 'Preparing…' : 'Begin interview'}<Icon name="arrow" size={17} /></button></div>
               </form>
             </section>
           )}
@@ -603,25 +736,38 @@ function App() {
           {page === 'session' && interview && currentQuestion && interview.id === routeInterviewId && (
             <section className="session-layout">
               {interview.generation_source === 'fallback' && <div className="llm-notice fallback-notice" role="status"><Icon name="spark" size={17} /><span><strong>Using reliable backup questions.</strong><small>The local model returned invalid question data, so this session uses validated role-specific questions.</small></span></div>}
-              <div className="session-top"><div><p className="eyebrow">{interview.role.toUpperCase()} · {interview.interview_type.toUpperCase()}</p><h1>Practice in your own words.</h1></div><button className="button button-quiet" onClick={() => navigate('dashboard')}>Save & exit</button></div>
+              <div className="session-top"><div><p className="eyebrow">{interview.student_name} · {interview.question_category} · {interview.difficulty.toUpperCase()}</p><h1>{isCodingTrack ? 'Solve the challenge.' : 'Practice with purpose.'}</h1></div><button className="button button-quiet" onClick={() => navigate('dashboard')}>Save & exit</button></div>
               <div className="session-progress"><div><span>QUESTION {String(interview.current_index + 1).padStart(2, '0')} <span className="muted">OF {String(interview.questions.length).padStart(2, '0')}</span></span><span className="session-timer"><Icon name="timer" size={13} />{elapsedLabel} elapsed</span><span>{Math.round((answeredCount / interview.questions.length) * 100)}% complete</span></div><div className="progress-track"><span style={{ width: `${Math.max(4, (answeredCount / interview.questions.length) * 100)}%` }} /></div></div>
               <div className="session-columns">
                 <div className="panel question-panel">
-                  <div className="question-label"><span className="question-pulse" />YOUR QUESTION{currentQuestionDetail?.is_follow_up && <span className="follow-up-tag">FOLLOW-UP</span>}</div>
+                  <div className="question-label"><span className="question-pulse" />{isCodingTrack ? 'CODING CHALLENGE' : interview.question_category.toUpperCase()}{currentQuestionDetail?.is_follow_up && <span className="follow-up-tag">FOLLOW-UP</span>}</div>
                   <h2>{currentQuestion}</h2>
                   {currentQuestionDetail?.competency && <div className="competency-label">FOCUS: {currentQuestionDetail.competency}</div>}
                   <div className="question-actions">
-                    <div className="speech-controls">
+                    {!isCodingTrack && <div className="speech-controls">
                       <button className="button button-outline" type="button" onClick={speakQuestion} disabled={speechMuted || !window.speechSynthesis}><Icon name="volume" size={17} />Speak question</button>
                       <button className="button button-outline mute-button" type="button" onClick={toggleSpeechMuted} disabled={!window.speechSynthesis} aria-pressed={speechMuted}><Icon name={speechMuted ? 'volumeMute' : 'volume'} size={15} />{speechMuted ? 'Unmute' : 'Mute'}</button>
                       <label className="voice-select-label" htmlFor="interviewer-voice">Voice<select id="interviewer-voice" value={selectedVoiceURI} onChange={(event) => setSelectedVoiceURI(event.target.value)} disabled={!availableVoices.length}><option value="">Browser default</option>{availableVoices.map((voice) => <option key={voice.voiceURI} value={voice.voiceURI}>{voice.name} ({voice.lang})</option>)}</select></label>
-                    </div>
-                    <span>Listen, then answer aloud or type.</span>
+                    </div>}
+                    <span>{isCodingTrack ? 'Include edge cases and time / space complexity.' : 'Listen, then answer aloud or type.'}</span>
                   </div>
                   <div className="answer-wrap">
-                    <div className="answer-heading"><label htmlFor="answer">{recordedAudio && answer ? 'Transcript (editable)' : 'Your answer'}</label><span>{answer.trim() ? answer.trim().split(/\s+/).length : 0} words</span></div>
-                    <textarea id="answer" className="answer-input" placeholder="Start with the context, then walk through what you did and what happened..." value={answer} onChange={(event) => setAnswer(event.target.value)} />
-                    <div className="recording-controls">
+                    {isCodingTrack ? (
+                      <>
+                        <div className="code-toolbar"><span>Solution</span><label htmlFor="code-language">Language<select id="code-language" value={codeLanguage} onChange={(event) => setCodeLanguage(event.target.value)}><option>Python</option><option>JavaScript</option><option>Java</option><option>C++</option><option>C#</option><option>Go</option></select></label></div>
+                        <div className="code-workspace">
+                          <div className="code-gutter" ref={codeGutterRef} aria-hidden="true">{Array.from({ length: codeLineCount }, (_, index) => <span key={index}>{index + 1}</span>)}</div>
+                          <textarea id="answer" className="answer-input code-editor" aria-label="Write your coding solution" spellCheck="false" autoCapitalize="off" autoCorrect="off" placeholder={codeLanguage === 'Python' ? 'def solution(...):\n    # Write your solution here\n    pass' : '// Write your solution here'} value={answer} onChange={(event) => setAnswer(event.target.value)} onScroll={(event) => { if (codeGutterRef.current) codeGutterRef.current.scrollTop = event.currentTarget.scrollTop }} />
+                        </div>
+                        <p className="editor-note">Solutions are reviewed by the AI coach; this workspace does not execute code.</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="answer-heading"><label htmlFor="answer">{recordedAudio && answer ? 'Transcript (editable)' : 'Your answer'}</label><span>{answer.trim() ? answer.trim().split(/\s+/).length : 0} words</span></div>
+                        <textarea id="answer" className="answer-input" placeholder="Start with the context, then walk through what you did and what happened..." value={answer} onChange={(event) => setAnswer(event.target.value)} />
+                      </>
+                    )}
+                    {!isCodingTrack && <div className="recording-controls">
                       {recording
                         ? <button className="voice-button recording-active" type="button" onClick={stopRecording}><Icon name="stop" size={15} />Stop recording <span>{formatDuration(recordingSeconds)}</span></button>
                         : <button className="voice-button" type="button" onClick={startRecording}><Icon name="mic" size={16} />Start recording</button>}
@@ -631,13 +777,13 @@ function App() {
                         <button className="voice-button" type="button" onClick={discardRecording}><Icon name="retry" size={15} />Retake</button>
                         <button className="voice-button transcribe-button" type="button" onClick={transcribeRecording} disabled={transcribing}><Icon name="play" size={15} />{transcribing ? 'Transcribing locally…' : 'Transcribe locally'}</button>
                       </>}
-                    </div>
-                    <p className="recording-note">Recordings are transcribed on this device with Faster-Whisper and are not saved to your interview history. You can always type your answer instead.</p>
+                    </div>}
+                    {!isCodingTrack && <p className="recording-note">Recordings are transcribed on this device with Faster-Whisper and are not saved to your interview history. You can always type your answer instead.</p>}
                     {microphoneError && <p className="recording-error" role="alert">{microphoneError}</p>}
                   </div>
                   <div className="session-footer">
                     {interview.current_index > 0 ? <button className="button button-quiet" type="button" onClick={() => moveQuestion(-1)}>← Previous</button> : <span />}
-                    <button className="button button-primary" type="button" onClick={submitAnswer} disabled={saving || transcribing || recording || !answer.trim()}>{saving ? 'Evaluating with Ollama…' : interview.current_index === interview.questions.length - 1 ? 'Finish interview' : 'Save & next'}<Icon name="arrow" size={17} /></button>
+                    <button className="button button-primary" type="button" onClick={submitAnswer} disabled={saving || transcribing || recording || !answer.trim()}>{saving ? 'Evaluating with Ollama…' : isCodingTrack ? 'Submit for review' : interview.current_index === interview.questions.length - 1 ? 'Finish interview' : 'Save & next'}<Icon name="arrow" size={17} /></button>
                   </div>
                 </div>
                 <aside className="session-aside">
@@ -652,13 +798,13 @@ function App() {
             <section className="results-layout">
               <button className="back-link" onClick={() => navigate('history')}>← All interviews</button>
               <div className="results-hero">
-                <div><p className="eyebrow">SESSION COMPLETE</p><h1>You showed up. That matters.</h1><p>Here’s a snapshot of your {interview.role} practice.</p></div>
+                <div><p className="eyebrow">SESSION COMPLETE · {interview.question_category.toUpperCase()}</p><h1>You showed up. That matters.</h1><p>{interview.student_name} · {interview.role} · {interview.difficulty} difficulty</p></div>
                 <div className="results-score"><strong>{averageScore}</strong><span>AVERAGE SCORE</span></div>
               </div>
               <div className="results-summary">
                 <div><strong>{interview.answers.length}<small>/{interview.questions.length}</small></strong><span>Questions answered</span></div>
                 <div><strong>{interview.answers.reduce((sum, item) => sum + item.evaluation.word_count, 0)}</strong><span>Words practiced</span></div>
-                <div><strong>{interview.experience_level}</strong><span>Experience level</span></div>
+                <div><strong>{interview.student_identifier || interview.experience_level}</strong><span>{interview.student_identifier ? 'Student ID' : 'Experience level'}</span></div>
               </div>
               <div className="panel review-panel">
                 <div className="panel-heading">
@@ -696,10 +842,186 @@ function App() {
           {page === 'history' && (
             <section className="history-layout"><div className="history-heading"><div><p className="eyebrow">YOUR PRACTICE, ALL IN ONE PLACE</p><h1>My interviews</h1><p>Every session is saved locally so you can keep track of your progress.</p></div><button className="button button-primary" onClick={() => navigate('setup')}><Icon name="plus" size={18} />New interview</button></div><div className="panel history-panel">{interviews.length ? <><div className="history-table-head"><span>ROLE</span><span>TYPE</span><span>DATE</span><span>STATUS</span><span>SCORE</span><span /></div>{interviews.map((item) => <InterviewRow key={item.id} interview={item} onClick={() => openInterview(item.id)} onDelete={deleteInterview} deleting={deletingInterviewId === item.id} detailed />)}</> : <EmptyState onStart={() => navigate('setup')} />}</div></section>
           )}
+          {page === 'billing' && <BillingPage catalog={planCatalog} user={user} saving={saving} onUpgrade={startCheckout} onCancel={cancelSubscription} />}
+          {page === 'company' && <OrganizationPage user={user} onUpdated={(nextUser) => setUser(nextUser)} />}
         </div>
       </main>
       <HelpChat />
     </div>
+  )
+}
+
+function AuthPage({ providers, error, onDismiss }) {
+  const [accountType, setAccountType] = useState('student')
+  const [companyName, setCompanyName] = useState('')
+  const [companyNameError, setCompanyNameError] = useState('')
+  const providerLabels = { google: 'Google', github: 'GitHub', apple: 'Apple' }
+  const inviteToken = new URLSearchParams(window.location.search).get('invite')
+
+  return (
+    <main className="auth-page">
+      <section className="auth-pitch">
+        <button className="auth-brand" onClick={() => { window.location.href = '/' }}><span className="brand-mark"><Icon name="spark" size={22} /></span>Interview<span>AI</span></button>
+        <div className="auth-pitch-content">
+          <p className="eyebrow">THE INTERVIEW PRACTICE PLATFORM</p>
+          <h1>Train for the interview.<br /><span>Show up ready.</span></h1>
+          <p>Real coding challenges. Structured feedback. A clear path from practice to your next opportunity.</p>
+          <div className="auth-feature-list">
+            <span><Icon name="check" size={17} />LeetCode-style coding practice</span>
+            <span><Icon name="check" size={17} />Aptitude and reasoning tracks</span>
+            <span><Icon name="check" size={17} />Private company workspaces</span>
+          </div>
+          <div className="auth-challenge-card"><div><span className="challenge-tag">DAILY CHALLENGE</span><strong>Two Sum</strong><small>Arrays · Easy · 15 min</small></div><div className="challenge-score">#01</div></div>
+        </div>
+        <div className="auth-pitch-footer">Built for ambitious candidates and the teams who hire them.</div>
+      </section>
+      <section className="auth-panel-wrap">
+        <div className="auth-panel">
+          <div className="auth-mobile-brand"><span className="brand-mark"><Icon name="spark" size={20} /></span>Interview<span>AI</span></div>
+          <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p>
+          <h2>{accountType === 'student' ? 'Welcome to your practice room.' : 'Create your company workspace.'}</h2>
+          <p className="auth-panel-copy">Sign in securely with an account you already use.</p>
+          <div className="auth-account-toggle">
+            <button type="button" className={accountType === 'student' ? 'selected' : ''} onClick={() => { setAccountType('student'); setCompanyNameError('') }}>Student</button>
+            <button type="button" className={accountType === 'company' ? 'selected' : ''} onClick={() => setAccountType('company')}>Company</button>
+          </div>
+          {accountType === 'company' && <label className="auth-company-field">Company name<input value={companyName} onChange={(event) => { setCompanyName(event.target.value); setCompanyNameError('') }} maxLength={120} minLength={2} placeholder="e.g. Northstar Labs" /></label>}
+          {companyNameError && <div className="auth-error" role="alert">{companyNameError}</div>}
+          {error && <div className="auth-error" role="alert"><span>{error}</span><button type="button" onClick={onDismiss} aria-label="Dismiss error">×</button></div>}
+          <div className="social-login-list">
+            {['google', 'github', 'apple'].map((provider) => {
+              const configured = providers.find((item) => item.id === provider)?.enabled
+              const query = new URLSearchParams({ account_type: accountType })
+              if (accountType === 'company') query.set('company_name', companyName)
+              if (inviteToken) query.set('invite_token', inviteToken)
+              return (
+                <a
+                  className={`social-login ${!configured ? 'disabled' : ''}`}
+                  href={configured ? `/api/auth/${provider}/start?${query}` : undefined}
+                  aria-disabled={!configured}
+                  title={!configured ? `${providerLabels[provider]} sign-in will be available when OAuth is configured.` : undefined}
+                  onClick={(event) => {
+                    if (!configured || (accountType === 'company' && companyName.trim().length < 2)) {
+                      event.preventDefault()
+                      if (configured && accountType === 'company') setCompanyNameError('Enter your company name to continue.')
+                    }
+                  }}
+                  key={provider}
+                >
+                  <span className={`social-mark ${provider}`}>{provider === 'google' ? 'G' : provider === 'github' ? '⌘' : '●'}</span>
+                  Continue with {providerLabels[provider]}
+                  {!configured && <small>Not configured</small>}
+                </a>
+              )
+            })}
+          </div>
+          <div className="auth-divider"><span />SECURE SIGN-IN<span /></div>
+          <p className="auth-terms">By continuing, you agree to the Terms of Service and Privacy Policy. Your company’s workspace and candidate records are isolated from other organizations.</p>
+          <div className="auth-pricing-note"><strong>Start free</strong><span>3 practice interviews monthly · Upgrade to Pro anytime</span></div>
+        </div>
+      </section>
+    </main>
+  )
+}
+
+function BillingPage({ catalog, user, saving, onUpgrade, onCancel }) {
+  const studentPlans = catalog?.student || []
+  const proPlan = studentPlans.find((plan) => plan.id === 'pro')
+  const currency = proPlan?.currency || 'USD'
+  const price = proPlan
+    ? new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(proPlan.amount / 100)
+    : '$9.00'
+  const companyContact = catalog?.company?.contact_email
+
+  return (
+    <section className="billing-layout">
+      <div className="billing-heading"><p className="eyebrow">SIMPLE, TRANSPARENT PRICING</p><h1>Choose your next level.</h1><p>Start free. Upgrade when you’re ready to practice without limits.</p><div className="billing-cadence">Monthly plans <span>·</span> Cancel anytime</div></div>
+      <div className="pricing-grid">
+        <article className="panel pricing-card"><div className="pricing-tier">START HERE</div><h2>Free</h2><p className="pricing-description">Build a consistent practice habit.</p><div className="pricing-price"><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(0)}</strong><span>/ month</span></div><ul><li><Icon name="check" size={16} />3 interviews every 30 days</li><li><Icon name="check" size={16} />All three question tracks</li><li><Icon name="check" size={16} />AI answer feedback</li><li><Icon name="check" size={16} />Progress history</li></ul><button className="button button-outline" disabled>{user.plan === 'free' ? 'Your current plan' : 'Free plan'}</button></article>
+        <article className="panel pricing-card pricing-featured"><div className="pricing-popular">MOST POPULAR</div><div className="pricing-tier">FOR SERIOUS PREP</div><h2>Pro</h2><p className="pricing-description">Practice as often as you need.</p><div className="pricing-price"><strong>{price}</strong><span>/ month</span></div><ul><li><Icon name="check" size={16} />Unlimited interview practice</li><li><Icon name="check" size={16} />All question tracks and difficulty levels</li><li><Icon name="check" size={16} />Full interview and answer history</li><li><Icon name="check" size={16} />AI feedback on every answer</li></ul><button className="button button-primary" disabled={saving || user.plan === 'pro' || !proPlan?.configured} onClick={onUpgrade}>{saving ? 'Opening secure checkout…' : user.plan === 'pro' ? 'You’re on Pro' : proPlan?.configured ? 'Upgrade securely' : 'Billing setup required'}</button>{user.plan === 'pro' && <button className="button button-outline" disabled={saving} onClick={onCancel}>Cancel at period end</button>}<small className="billing-provider-note">Secure recurring checkout powered by Razorpay.</small></article>
+        <article className="panel pricing-card"><div className="pricing-tier">FOR TEAMS</div><h2>Company</h2><p className="pricing-description">Bring structured candidate practice to your team.</p><div className="company-price"><strong>Custom</strong><span>Built around your hiring needs</span></div><ul><li><Icon name="check" size={16} />Private company workspace</li><li><Icon name="check" size={16} />Invite-only student access</li><li><Icon name="check" size={16} />Shared candidate progress</li><li><Icon name="check" size={16} />Dedicated onboarding</li></ul>{companyContact ? <a className="button button-outline" href={`mailto:${companyContact}?subject=InterviewAI%20Company%20Plan`}>Contact sales</a> : <button className="button button-outline" disabled>Contact sales · email not configured</button>}</article>
+      </div>
+      {!proPlan?.configured && <div className="billing-config-note" role="status">Checkout is not active yet. The owner must configure Razorpay API keys, a Pro plan ID with matching currency, and a verified webhook before students can subscribe.</div>}
+    </section>
+  )
+}
+
+function OrganizationPage({ user, onUpdated }) {
+  const [organizationName, setOrganizationName] = useState('')
+  const [inviteToken, setInviteToken] = useState('')
+  const [inviteLink, setInviteLink] = useState('')
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const refreshUser = async () => onUpdated(await api('/auth/me'))
+  const createOrganization = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await api('/organizations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: organizationName }) })
+      setOrganizationName('')
+      setMessage('Company workspace created.')
+      await refreshUser()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const createInvite = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const invite = await api(`/organizations/${user.organization_id}/invites`, { method: 'POST' })
+      setInviteLink(`${window.location.origin}/?invite=${encodeURIComponent(invite.invite_token)}`)
+      setMessage('Invite link created. It expires in 7 days and can be used once.')
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const joinOrganization = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setError('')
+    try {
+      await api('/organizations/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ invite_token: inviteToken }) })
+      setInviteToken('')
+      setMessage('You joined the company workspace.')
+      await refreshUser()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+  const selectOrganization = async (organizationId) => {
+    setBusy(true)
+    setError('')
+    try {
+      await api(`/organizations/${organizationId}/select`, { method: 'POST' })
+      await refreshUser()
+      setMessage('Workspace switched.')
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="organization-layout">
+      <div className="history-heading"><div><p className="eyebrow">YOUR ORGANIZATIONS</p><h1>Company workspace</h1><p>Keep candidate practice private to your organization.</p></div></div>
+      {message && <div className="organization-message" role="status">{message}</div>}
+      {error && <div className="alert" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
+      <div className="organization-columns">
+        <div className="panel organization-card"><p className="eyebrow">WORKSPACES YOU CAN ACCESS</p>{user.organizations?.map((organization) => <div className="organization-row" key={organization.id}><span><strong>{organization.name}</strong><small>{organization.role} · {organization.plan} plan</small></span>{organization.id === user.organization_id ? <b>Current</b> : <button type="button" className="button button-outline" disabled={busy} onClick={() => selectOrganization(organization.id)}>Switch</button>}</div>)}</div>
+        <div className="panel organization-card"><p className="eyebrow">COMPANY ADMIN TOOLS</p><form onSubmit={createOrganization}><label className="field-label" htmlFor="organization-name">Create a company workspace</label><input id="organization-name" className="text-input" minLength="2" maxLength="120" required placeholder="Company or school name" value={organizationName} onChange={(event) => setOrganizationName(event.target.value)} /><button className="button button-primary" disabled={busy} type="submit">Create workspace</button></form><div className="organization-invite"><strong>Invite students</strong><p>Create a one-time invite link for this active workspace.</p><button className="button button-outline" type="button" disabled={busy || !['owner', 'admin'].includes(user.organization_role)} onClick={createInvite}>Generate invite link</button>{inviteLink && <input className="text-input invite-link" readOnly value={inviteLink} onFocus={(event) => event.target.select()} aria-label="Student invite link" />}</div><form onSubmit={joinOrganization}><label className="field-label" htmlFor="invite-token">Join with an invite token</label><input id="invite-token" className="text-input" required minLength="32" maxLength="128" value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} placeholder="Paste an invite token" /><button className="button button-outline" disabled={busy} type="submit">Join workspace</button></form></div>
+      </div>
+    </section>
   )
 }
 
@@ -772,8 +1094,8 @@ function InterviewRow({ interview, onClick, onDelete, deleting = false, detailed
   return (
     <div className="interview-entry">
       <button className={detailed ? 'interview-row detailed' : 'interview-row'} onClick={onClick}>
-        <span className="role-cell"><span className="role-icon"><Icon name="spark" size={17} /></span><span><strong>{interview.role}</strong>{detailed && <small>{interview.experience_level}</small>}</span></span>
-        <span className="type-cell">{interview.interview_type}</span>
+        <span className="role-cell"><span className="role-icon"><Icon name="spark" size={17} /></span><span><strong>{interview.role}</strong>{detailed && <small>{interview.student_name}{interview.student_identifier ? ` · ${interview.student_identifier}` : ''} · {interview.experience_level}</small>}</span></span>
+        <span className="type-cell">{interview.question_category || interview.interview_type}</span>
         <span className="date-cell">{formatDate(interview.created_at)}</span>
         <span className={interview.status === 'completed' ? 'status-badge complete' : 'status-badge in-progress'}>{interview.status === 'completed' ? 'Completed' : 'In progress'}</span>
         <span className="score-cell">{interview.average_score == null ? '—' : `${interview.average_score}%`}</span>

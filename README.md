@@ -1,10 +1,10 @@
 # InterviewAI
 
-**A local-first, AI-powered mock interview coach.**
+**An AI-powered interview-practice platform for students and hiring teams.**
 
-InterviewAI creates role-specific practice interviews from a target role, experience level, resume, and job description. Answer by typing or recording your voice, then review structured feedback and track your progress in a private, local interview history.
+InterviewAI creates role-specific practice sessions from a student's target role, difficulty, resume, and job description. Choose an aptitude, reasoning, or coding/interview track; then review structured feedback and track progress in a competitive coding workspace. The app includes OAuth sign-in, student subscriptions, and isolated company workspaces; provider and billing credentials must be configured by the operator.
 
-The application is designed to run on your own Windows computer. Its AI features use a local [Ollama](https://ollama.com/) model; no paid AI API key is required.
+The development setup is designed for Windows and uses a local [Ollama](https://ollama.com/) model; no paid AI API key is required for local model use.
 
 ![InterviewAI dashboard](docs/screenshots/dashboard.png)
 
@@ -17,6 +17,7 @@ The application is designed to run on your own Windows computer. Its AI features
 - [First-run verification](#first-run-verification)
 - [Using the application](#using-the-application)
 - [Configuration](#configuration)
+- [SaaS configuration (OAuth, billing, and workspaces)](#saas-configuration-oauth-billing-and-workspaces)
 - [API overview](#api-overview)
 - [Privacy and local data](#privacy-and-local-data)
 - [Troubleshooting](#troubleshooting)
@@ -27,10 +28,14 @@ The application is designed to run on your own Windows computer. Its AI features
 ## Features
 
 - **AI-generated questions tailored to your role:** Select an experience level, interview type, and 3–10 questions. Ollama receives the role and relevant resume/job-description context to generate questions, competencies, evaluation criteria, and suggested answers. The API records whether the questions came from Ollama or a validated fallback.
+- **Three focused practice tracks:** Basic Aptitude, Logical Reasoning, and Coding Rounds & Interview. Choose Easy, Medium, or Hard; coding prompts include examples and are answered in a dedicated language-aware editor.
+- **Student records:** Save each attempt with a student name and optional student ID, alongside its questions, answers, scores, and feedback.
+- **Student accounts and Pro billing:** Sign in with configured Google, GitHub, or Apple OAuth; upgrade to Pro through a configured Razorpay monthly subscription.
+- **Company workspaces:** Create isolated organization workspaces, invite students using one-time links, and review workspace candidate progress.
 - **Resume and job-description parsing:** Upload PDF, TXT, or Markdown files for local text extraction. Analyze job requirements and compare them with resume skills.
 - **Structured answer feedback:** Evaluate answers for relevance, completeness, clarity, and technical accuracy. Review the score, strengths, improvement suggestions, and a suggested answer.
 - **Voice practice:** Record answers in the browser and transcribe them locally using Faster-Whisper. Browser speech synthesis can read questions aloud. Typed answers are always available.
-- **Interview history:** Save interviews and answers in SQLite, see recent sessions and score trends, reopen previous sessions, and delete interviews from the history view.
+- **Interview history:** Save student attempts and answers in Microsoft SQL Server, see recent sessions and score trends, reopen previous sessions, and delete interviews from the history view.
 - **Local AI help chat:** Ask the configured Ollama model for help with interview preparation or the application. Recent chat context is limited and is not saved to the interview database.
 - **Document analysis through MCP:** The local InterviewAI MCP server exposes tools for extracting job requirements and comparing a candidate resume with a job description.
 - **Responsive interface:** Includes dashboard metrics, light/dark themes, progress tracking, accessible focus states, and clear loading and error messages.
@@ -41,7 +46,7 @@ The application is designed to run on your own Windows computer. Its AI features
 React + Vite in your browser
           │ /api requests (Vite proxy)
           ▼
-FastAPI backend ─────── SQLite interview history
+FastAPI backend ─────── Microsoft SQL Server student/interview records
      │
      ├── Ollama on localhost ── question generation, evaluation, help chat
      ├── Local MCP subprocess ── job/resume analysis tools
@@ -57,6 +62,7 @@ The frontend development server proxies `/api` requests to `http://127.0.0.1:800
 - Python 3.10 or 3.12 (these versions are exercised by CI)
 - Node.js 22.12 or newer (or Node.js 20.19 or newer)
 - [Ollama for Windows](https://ollama.com/download)
+- Microsoft SQL Server Database Engine, [SQL Server Management Studio](https://learn.microsoft.com/sql/ssms/download-sql-server-management-studio-ssms), and the Microsoft ODBC Driver 18 for SQL Server. SSMS is a client; it does not install or run the database engine.
 - Enough disk space for the Ollama model (approximately 2–3 GB for `llama3.2:3b`) and the optional Faster-Whisper model
 - A microphone for voice recording; typed answers do not require one
 
@@ -86,7 +92,21 @@ ollama list
 
 Ollama normally runs in the background and serves its local API at `http://127.0.0.1:11434`. If `ollama` is not recognized, finish installing Ollama and open a new PowerShell window. Keep Ollama running while using AI features.
 
-### 3. Set up and start the backend
+### 3. Create and configure the SQL Server database
+
+In SSMS, connect to your local SQL Server instance using Windows authentication and create a database named `InterviewAI` if it does not already exist. Note the server/instance name shown in SSMS (for example, `localhost` or `localhost\SQLEXPRESS`).
+
+Before starting the backend, set these variables in the same PowerShell window. Replace the server value with the one from SSMS:
+
+```powershell
+$env:INTERVIEWAI_DB_BACKEND = "sqlserver"
+$env:INTERVIEWAI_SQLSERVER_SERVER = "localhost\SQLEXPRESS"
+$env:INTERVIEWAI_SQLSERVER_DATABASE = "InterviewAI"
+```
+
+The backend uses Windows integrated authentication. It creates the interview and answer tables and applies schema updates automatically. It will report an explicit connection error if the SQL Server service, database, or ODBC driver is unavailable; it does not silently switch to SQLite.
+
+### 4. Set up and start the backend
 
 From the **repository root**, run:
 
@@ -97,7 +117,7 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
 ```
 
-Keep this PowerShell window open. The `--app-dir backend` option is important: it adds the backend directory to Python's import path, so Uvicorn can import `main:app` when the command is run from the repository root. The database is initialized automatically at `backend\interviewai.db`.
+Keep this PowerShell window open. The `--app-dir backend` option is important: it adds the backend directory to Python's import path, so Uvicorn can import `main:app` when the command is run from the repository root. The configured SQL Server database is initialized automatically.
 
 Check the backend in a browser:
 
@@ -105,8 +125,9 @@ Check the backend in a browser:
 - Interactive API documentation: <http://127.0.0.1:8000/docs>
 - Ollama status: <http://127.0.0.1:8000/api/llm/status>
 - MCP status: <http://127.0.0.1:8000/api/mcp/status>
+- Storage status: <http://127.0.0.1:8000/api/storage/status>
 
-### 4. Set up and start the frontend
+### 5. Set up and start the frontend
 
 Open a **second PowerShell window** in the repository root and run:
 
@@ -121,6 +142,9 @@ Open the URL Vite prints in the terminal, usually <http://localhost:5173>. Keep 
 On later runs, dependency installation is not needed. Start the backend from the repository root:
 
 ```powershell
+$env:INTERVIEWAI_DB_BACKEND = "sqlserver"
+$env:INTERVIEWAI_SQLSERVER_SERVER = "localhost\SQLEXPRESS"
+$env:INTERVIEWAI_SQLSERVER_DATABASE = "InterviewAI"
 backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
 ```
 
@@ -150,10 +174,10 @@ The interview response includes `generation_source` (`ollama` or `fallback`). Ol
 ### Create and complete an interview
 
 1. Choose a target role and experience level.
-2. Choose **Mixed**, **Technical**, or **Behavioral**, and select 3–10 questions.
+2. Enter the student name and optional student ID. Choose one of **Basic Aptitude**, **Logical Reasoning**, or **Coding Rounds & Interview**, set difficulty, then choose 3–10 questions.
 3. Optionally upload a resume and job description. The application extracts text and can show a comparison of matching and missing skills.
 4. Start the interview. Questions are shown one at a time with progress information.
-5. Type your response, or record it and submit the local transcript. Use the read-aloud controls if desired.
+5. Type your response, or record a spoken answer and submit the local transcript. Coding tracks use the language selector and code editor; solutions are AI-reviewed but are not executed.
 6. Submit each answer in order. Review its feedback, then continue until the scorecard appears.
 7. Find saved sessions in **My interviews**. Use the delete control and confirm to remove a session and its associated answers.
 
@@ -170,6 +194,9 @@ The interview response includes `generation_source` (`ollama` or `fallback`). Ol
 Set optional environment variables in the same PowerShell window before starting the backend:
 
 ```powershell
+$env:INTERVIEWAI_DB_BACKEND = "sqlserver"
+$env:INTERVIEWAI_SQLSERVER_SERVER = "localhost"
+$env:INTERVIEWAI_SQLSERVER_DATABASE = "InterviewAI"
 $env:OLLAMA_MODEL = "llama3.2:3b"
 $env:WHISPER_MODEL = "tiny.en"
 backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
@@ -177,9 +204,49 @@ backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `INTERVIEWAI_DB_BACKEND` | `sqlserver` | Select `sqlserver` or `sqlite`. |
+| `INTERVIEWAI_SQLSERVER_SERVER` | `localhost\SQLEXPRESS` | SQL Server host or instance name. Uses Windows integrated authentication. |
+| `INTERVIEWAI_SQLSERVER_DATABASE` | `InterviewAI` | Existing database to use; create it in SSMS before starting the API. |
+| `INTERVIEWAI_SQLSERVER_DRIVER` | `ODBC Driver 18 for SQL Server` | Installed Microsoft ODBC driver name. |
+| `INTERVIEWAI_SQLSERVER_CONNECTION_STRING` | unset | Optional full ODBC connection string override. Keep secrets out of source control. |
 | `OLLAMA_MODEL` | `llama3.2:3b` | Model tag to use for questions, answer evaluation, and help chat. The model must already be pulled with Ollama. |
 | `OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama API URL. For privacy, the backend only accepts HTTP URLs on localhost or a loopback IP address. |
 | `WHISPER_MODEL` | `tiny.en` | Faster-Whisper model used for local transcription. |
+
+## SaaS configuration (OAuth, billing, and workspaces)
+
+Authentication and payment flows are implemented but remain unavailable until the operator registers OAuth applications and configures Razorpay. Set these values in the backend process environment; never put secrets in frontend code, source control, or screenshots.
+
+| Variable | Purpose |
+| --- | --- |
+| `INTERVIEWAI_SESSION_SECRET` | Stable, private signing key for browser sessions. Required in deployment; generate a random secret and keep it consistent across backend restarts/instances. |
+| `INTERVIEWAI_PUBLIC_URL` | Public frontend origin, such as `https://app.example.com`. |
+| `INTERVIEWAI_API_PUBLIC_URL` | Public API origin used to build OAuth callback URLs. If omitted, callbacks use `INTERVIEWAI_PUBLIC_URL`. |
+| `INTERVIEWAI_CORS_ORIGINS` | Comma-separated allowed frontend origins. Defaults to the two local Vite origins; set exact HTTPS production origins. |
+| `INTERVIEWAI_COOKIE_SECURE` | Set to `true` behind HTTPS so the session cookie is sent only over secure connections. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Google OAuth application credentials. |
+| `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` | GitHub OAuth application credentials. |
+| `APPLE_CLIENT_ID`, `APPLE_CLIENT_SECRET` | Apple Sign in with Apple service ID and generated client-secret JWT. |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay API credentials (use test credentials while validating). |
+| `RAZORPAY_PRO_PLAN_ID` | Razorpay recurring plan ID. It must match the configured amount and currency. |
+| `RAZORPAY_WEBHOOK_SECRET` | Secret used to verify Razorpay webhook signatures; checkout stays disabled without it. |
+| `INTERVIEWAI_PRO_AMOUNT` | Monthly Pro amount in the currency's minor units. Defaults to `900` (USD $9.00). |
+| `INTERVIEWAI_PRO_CURRENCY` | Pro plan currency. Defaults to `USD`; the Razorpay plan must use the same currency. |
+| `INTERVIEWAI_SALES_EMAIL` | Optional company-plan contact email shown in the pricing page. |
+
+Register each provider callback URL exactly as:
+
+```text
+{INTERVIEWAI_API_PUBLIC_URL}/api/auth/google/callback
+{INTERVIEWAI_API_PUBLIC_URL}/api/auth/github/callback
+{INTERVIEWAI_API_PUBLIC_URL}/api/auth/apple/callback
+```
+
+In Razorpay, create a monthly plan with the same configured amount/currency and register the webhook endpoint `{INTERVIEWAI_API_PUBLIC_URL}/api/billing/webhook` for subscription events. Configure the webhook secret in the backend. The backend verifies webhook signatures and only grants Pro after an activation event. Test the complete flow with Razorpay test credentials before enabling live credentials.
+
+Company invite links are one-time bearer tokens valid for seven days; distribute them only through a trusted channel. The app does not send invitation emails. Company pricing is contact-sales only and does not have an automated company checkout flow.
+
+These settings enable the implemented flows; they do not supply a hosting provider, an email service, legal terms/privacy notices, or operational monitoring.
 
 For example, after pulling a different Ollama model, set `OLLAMA_MODEL` to its exact tag. Environment variables set in one PowerShell window do not carry over to another window.
 
@@ -190,7 +257,17 @@ The backend's complete interactive schema is available at <http://127.0.0.1:8000
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Backend health check. |
+| `GET` | `/api/auth/providers` | Public OAuth-provider configuration status. |
+| `GET` | `/api/auth/me` | Current signed-in user, workspaces, and plan. |
+| `GET` / `POST` | `/api/organizations` | List or create company workspaces. |
+| `POST` | `/api/organizations/{organization_id}/invites` | Create a one-time student invitation. |
+| `POST` | `/api/organizations/join` | Join a workspace using an invitation token. |
+| `GET` | `/api/billing/plans` | Student and company plan catalog. |
+| `POST` | `/api/billing/checkout` | Start student Pro checkout. |
+| `POST` | `/api/billing/cancel` | Schedule student Pro cancellation. |
+| `POST` | `/api/billing/webhook` | Verify and process Razorpay subscription events. |
 | `GET` | `/api/dashboard` | Interview totals, average scores, recent sessions, and score progress. |
+| `GET` | `/api/storage/status` | Active database engine and database name. |
 | `GET` | `/api/interviews` | List saved interviews. |
 | `POST` | `/api/interviews` | Generate and save a role-specific interview. |
 | `GET` | `/api/interviews/{interview_id}` | Retrieve an interview and its answers. |
@@ -206,13 +283,15 @@ The backend's complete interactive schema is available at <http://127.0.0.1:8000
 
 ## Privacy and local data
 
-- The application is local-first. Ollama, the MCP subprocess, PDF extraction, SQLite, and audio transcription run on your computer.
+- In the documented local-development setup, Ollama, the MCP subprocess, PDF extraction, SQL Server, and audio transcription run on your computer. A hosted deployment needs corresponding hosted services and data-protection controls.
 - Ollama is restricted to a loopback address; the backend rejects a non-local Ollama URL.
 - Resume context used in question generation is privacy-filtered to remove detected contact details.
-- Original resume and job-description text is not stored in the interview database. Interview questions, submitted answers, scores, and evaluations are stored locally.
+- Student name and optional student ID are stored with each interview. Original resume and job-description text is not stored; questions, submitted answers, scores, and evaluations are stored in the configured SQL Server database.
+- OAuth account identity (provider ID, verified email, and display name), workspace memberships, session IDs, invitation-token hashes, and subscription status metadata are stored. Payment details are handled by Razorpay; OAuth access tokens are not stored by InterviewAI.
 - Audio recordings are written to a temporary file for transcription and removed afterward. The resulting transcript and evaluation are saved with the interview when submitted.
 - The help-chat history is held in the browser tab and sent as limited recent context; it is not persisted in the interview database.
-- The SQLite database is `backend\interviewai.db`. Back up this file to preserve interview history. Removing it resets saved local interview data.
+- The backend defaults to SQL Server. Set `INTERVIEWAI_DB_BACKEND=sqlite` only when intentionally using the legacy local SQLite database. Existing records in `backend\interviewai.db` are not deleted or automatically imported when switching to SQL Server.
+- The SQL Server connection uses the Windows account running the backend. Ensure that account has permission to create tables in the selected database.
 - Do not commit real resumes, recordings, secrets, `.env` files, or your local database to the repository.
 
 ## Troubleshooting
@@ -295,7 +374,7 @@ The preview is for checking the frontend build; the API backend still needs to b
 
 ## Deployment notes
 
-The interactive application is designed for local development and is **not ready to expose directly to the public internet**. The backend expects local Ollama, starts MCP as a local subprocess, stores data in a local SQLite file, and allows only the local Vite development origins. A hosted static frontend cannot connect to your computer's Ollama service.
+The interactive application has a SaaS foundation but is **not production-ready to expose directly to the public internet**. OAuth and Razorpay require operator-owned credentials; the default SQL Server configuration uses Windows integrated authentication; Ollama and MCP are local-development services; and production hosting, legal/privacy review, email delivery, monitoring, backups, and incident-response procedures still need to be established. Set production CORS and secure-cookie settings, deploy with HTTPS, use a durable database and model service, and verify tenant isolation and provider/payment flows in the actual deployment before onboarding users.
 
 Public deployment requires a model-capable backend, durable database storage, production CORS and access controls, secure handling of resumes and answers, and an explicit privacy policy. Do not expose the development API publicly as-is.
 
@@ -306,7 +385,7 @@ A static, non-interactive project page is published at [YashChauhan178.github.io
 ```text
 InterviewAI/
 ├── backend/
-│   ├── main.py                 # FastAPI routes and SQLite persistence
+│   ├── main.py                 # FastAPI routes and SQL Server/SQLite persistence
 │   ├── llm_service.py          # Ollama question generation and evaluation
 │   ├── document_analysis.py    # Resume/JD parsing and comparison
 │   ├── audio_transcription.py  # Local Faster-Whisper transcription
