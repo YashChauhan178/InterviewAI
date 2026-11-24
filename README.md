@@ -47,6 +47,10 @@ The development setup is designed for Windows and uses a local [Ollama](https://
 
 ![InterviewAI mobile sign-in](docs/screenshots/signin-mobile.png)
 
+![InterviewAI company workspace sign-up on desktop](docs/screenshots/signup-company-desktop.png)
+
+![InterviewAI company workspace sign-up on mobile](docs/screenshots/signup-company-mobile.png)
+
 ## How it works
 
 ```text

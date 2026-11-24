@@ -1098,7 +1098,7 @@ h1 { color: #1d2d49; }
   .pricing-card:last-child { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
-  .auth-page { display: block; }
+  .auth-page { display: block; width: 100%; overflow-x: clip; }
   .auth-pitch { display: none; }
   .auth-panel-wrap { min-height: 100vh; padding: 28px 23px; }
   .auth-mobile-brand { display: inline-flex; margin-bottom: 38px; color: #233149; }
