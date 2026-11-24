@@ -19,6 +19,7 @@ from typing import Any, Literal, NoReturn
 
 import httpx
 import pymupdf
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi import Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +40,7 @@ from mcp_client import connect_mcp_server
 
 
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 DATABASE_PATH = BASE_DIR / "interviewai.db"
 QUESTION_CATEGORIES = (
     "Basic Aptitude",

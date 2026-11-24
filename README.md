@@ -222,7 +222,7 @@ backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
 
 ## SaaS configuration (OAuth, billing, and workspaces)
 
-Authentication and payment flows remain unavailable until the operator registers OAuth applications and configures Razorpay. Google, GitHub, and Apple sign-in automatically creates an account the first time a verified provider identity is used. InterviewAI does not provide password-based sign-in. Set OAuth values in the backend process environment; never put secrets in frontend code, source control, screenshots, or chat messages.
+Authentication and payment flows remain unavailable until the operator registers OAuth applications and configures Razorpay. Google, GitHub, and Apple sign-in automatically creates an account the first time a verified provider identity is used. InterviewAI does not provide password-based sign-in. For local development, the backend reads OAuth settings from the git-ignored `backend\.env` file; never put secrets in frontend code, source control, screenshots, or chat messages.
 
 | Variable | Purpose |
 | --- | --- |
@@ -241,25 +241,30 @@ Authentication and payment flows remain unavailable until the operator registers
 | `INTERVIEWAI_PRO_CURRENCY` | Pro plan currency. Defaults to `USD`; the Razorpay plan must use the same currency. |
 | `INTERVIEWAI_SALES_EMAIL` | Optional company-plan contact email shown in the pricing page. |
 
-Register each provider callback URL exactly as:
+For local development with the Vite proxy, use these callback URLs:
 
 ```text
-{INTERVIEWAI_API_PUBLIC_URL}/api/auth/google/callback
-{INTERVIEWAI_API_PUBLIC_URL}/api/auth/github/callback
-{INTERVIEWAI_API_PUBLIC_URL}/api/auth/apple/callback
+http://localhost:5173/api/auth/google/callback
+http://localhost:5173/api/auth/github/callback
 ```
 
-For local Google-account testing with the default Vite proxy, configure the Google OAuth consent screen and create a **Web application** OAuth client in Google Cloud Console. Add `http://localhost:5173` as an authorized JavaScript origin and `http://localhost:5173/api/auth/google/callback` as an authorized redirect URI. Add your Google account to the consent screen's test users while the app remains in testing mode. Then set the client ID and secret in the same PowerShell window that starts the backend and restart it so the OAuth client is registered:
+Configure Google in Google Cloud Console with `http://localhost:5173` as an authorized JavaScript origin and `http://localhost:5173/api/auth/google/callback` as an authorized redirect URI. Add your Google account to the consent screen's test users while the app remains in testing mode. Configure GitHub's OAuth app callback URL as `http://localhost:5173/api/auth/github/callback`.
 
-```powershell
-$env:GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
-$env:GOOGLE_CLIENT_SECRET = "your-client-secret"
-$env:INTERVIEWAI_PUBLIC_URL = "http://localhost:5173"
-$env:INTERVIEWAI_API_PUBLIC_URL = "http://localhost:5173"
-$env:INTERVIEWAI_SESSION_SECRET = "replace-with-a-long-random-secret"
+Open `backend\.env` locally and add the provider client IDs and secrets you received from each provider. For example:
+
+```dotenv
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GITHUB_CLIENT_ID=your-github-client-id
+GITHUB_CLIENT_SECRET=your-github-client-secret
+INTERVIEWAI_PUBLIC_URL=http://localhost:5173
+INTERVIEWAI_API_PUBLIC_URL=http://localhost:5173
+INTERVIEWAI_CORS_ORIGINS=http://localhost:5173
+INTERVIEWAI_COOKIE_SECURE=false
+INTERVIEWAI_SESSION_SECRET=generate-a-long-random-secret-for-local-development
 ```
 
-Keep the client secret private. Never paste it into source files, screenshots, or chat. For production, register the exact HTTPS frontend/API callback origins instead; temporary tunnel hostnames expire and are unsuitable as permanent OAuth callbacks.
+Keep this file on your computer. It is excluded from Git. Do not paste credentials into chat or commit them. After saving it, stop and restart the backend so it loads the new provider configuration, then check `http://127.0.0.1:8000/api/auth/providers`; Google and GitHub should both report `enabled: true`. Apple Sign In cannot use the localhost callback: it requires a registered HTTPS domain and should be configured after a permanent HTTPS deployment. For production, register each provider's exact HTTPS frontend/API callback URLs and set deployment secrets through the hosting provider's secret manager instead of this local file. Temporary tunnel hostnames expire and are unsuitable as permanent OAuth callbacks.
 
 In Razorpay, create a monthly plan with the same configured amount/currency and register the webhook endpoint `{INTERVIEWAI_API_PUBLIC_URL}/api/billing/webhook` for subscription events. Configure the webhook secret in the backend. The backend verifies webhook signatures and only grants Pro after an activation event. Test the complete flow with Razorpay test credentials before enabling live credentials.
 
