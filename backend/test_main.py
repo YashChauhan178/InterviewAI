@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -168,6 +169,67 @@ class InterviewApiTests(unittest.TestCase):
             main.app.dependency_overrides[main.require_current_user] = test_override
 
         self.assertEqual(response.status_code, 401)
+
+    def test_free_interview_limit_is_three_in_a_rolling_fourteen_day_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        interview_dates = [
+            now - timedelta(days=2),
+            now - timedelta(days=8),
+            now - timedelta(days=15),
+        ]
+        with (
+            patch.object(
+                main.llm_service,
+                "generate_interview",
+                new_callable=AsyncMock,
+                return_value=sample_interview(),
+            ) as generate,
+            TestClient(main.app) as client,
+        ):
+            with main.connect_db() as connection:
+                for index, created_at in enumerate(interview_dates):
+                    connection.execute(
+                        """
+                        INSERT INTO interviews
+                            (id, role, experience_level, interview_type, questions,
+                             tenant_id, user_id, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"usage-test-{index}",
+                            "Software Engineer",
+                            "Mid-level",
+                            "Technical",
+                            json.dumps(["Practice question"]),
+                            "test-organization",
+                            "test-user",
+                            created_at.isoformat(),
+                        ),
+                    )
+
+            initial_profile = client.get("/api/auth/me")
+            self.assertEqual(initial_profile.status_code, 200)
+            self.assertEqual(initial_profile.json()["free_interviews_remaining"], 1)
+            self.assertEqual(initial_profile.json()["free_interview_window_days"], 14)
+
+            allowed = client.post(
+                "/api/interviews",
+                json={"role": "Software Engineer", "question_count": 3},
+            )
+            self.assertEqual(allowed.status_code, 200)
+            self.assertEqual(
+                client.get("/api/auth/me").json()["free_interviews_remaining"],
+                0,
+            )
+
+            blocked = client.post(
+                "/api/interviews",
+                json={"role": "Software Engineer", "question_count": 3},
+            )
+
+        self.assertEqual(blocked.status_code, 402)
+        self.assertIn("3 free interviews in the last 14 days", blocked.json()["detail"])
+        generate.assert_awaited_once()
 
     def test_pro_plan_remains_disabled_without_a_webhook_secret(self) -> None:
         with patch.dict(

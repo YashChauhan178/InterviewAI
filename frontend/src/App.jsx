@@ -58,6 +58,21 @@ function Icon({ name, size = 20 }) {
   return <IconComponent aria-hidden="true" size={size} strokeWidth={1.8} />
 }
 
+function BrandMark() {
+  return (
+    <span className="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none">
+        <path d="M7.2 7.4 12 4.8l4.8 2.6v5.2L12 15l-4.8-2.4V7.4Z" />
+        <path d="m7.2 12.6 4.8 2.5 4.8-2.5M12 15.1v4.1m-4.8-9.2L4 11.6m12.8-1.6 3.2 1.6" />
+        <circle cx="12" cy="4.3" r="1.3" />
+        <circle cx="3.7" cy="11.7" r="1.3" />
+        <circle cx="20.3" cy="11.7" r="1.3" />
+        <circle cx="12" cy="20" r="1.3" />
+      </svg>
+    </span>
+  )
+}
+
 function formatDate(value) {
   return new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' }).format(new Date(value))
 }
@@ -603,12 +618,13 @@ function App() {
       : llmStatus.model_available
         ? 'Local LLM ready'
         : 'Model needs download'
+  const freeLimitReached = user?.is_personal && user.plan !== 'pro' && user.free_interviews_remaining === 0
 
   return (
     <div className="app-shell" data-theme={theme}>
       <aside className="sidebar">
         <button className="brand" onClick={() => navigate('dashboard')} aria-label="InterviewAI home">
-          <span className="brand-mark"><Icon name="spark" size={22} /></span>
+          <BrandMark />
           <span>interview<span className="brand-ai">ai</span></span>
         </button>
         <div className="workspace-label">WORKSPACE</div>
@@ -619,7 +635,7 @@ function App() {
           <button className={page === 'company' ? 'nav-item active' : 'nav-item'} onClick={() => navigate('company')}><Icon name="grid" />Company workspace</button>
         </nav>
         <div className="sidebar-bottom">
-          <div className="local-card"><span className="local-dot" /><div><strong>Private by design</strong><small>Your practice stays on this device</small></div></div>
+          <div className="local-card"><span className="local-dot" /><div><strong>Private by design</strong><small>Practice data stays in your workspace</small></div></div>
           <div className="profile"><div className="avatar">{user.name?.slice(0, 1) || 'S'}</div><div><strong>{user.name}</strong><small>{user.plan === 'pro' ? 'Pro member' : 'Free member'}</small></div><button className="profile-menu" type="button" onClick={signOut} title="Sign out" aria-label="Sign out">↪</button></div>
         </div>
       </aside>
@@ -639,7 +655,16 @@ function App() {
             <>
               <section className="welcome-row">
                 <div><p className="eyebrow">{formatToday()}</p><h1>Build interview readiness<br />with deliberate practice.</h1><p className="welcome-copy">Practice role-specific questions and turn feedback into measurable progress.</p></div>
-                <button className="button button-primary" onClick={() => navigate('setup')}><Icon name="plus" size={19} />Start an interview</button>
+                <div className="welcome-actions">
+                  <div className="free-session-meter" role="status">
+                    <span className="free-session-dots" aria-hidden="true">
+                      {[0, 1, 2].map((slot) => <i className={user.plan === 'pro' || !user.is_personal || slot < (user.free_interviews_remaining ?? 0) ? 'available' : ''} key={slot} />)}
+                    </span>
+                    <span><strong>{user.plan === 'pro' || !user.is_personal ? 'Unlimited practice' : `${user.free_interviews_remaining ?? 0} free ${user.free_interviews_remaining === 1 ? 'session' : 'sessions'} left`}</strong><small>{user.plan === 'pro' ? 'Pro membership' : user.is_personal ? '3 sessions in each rolling 14-day window' : 'Company workspace practice'}</small></span>
+                  </div>
+                  {freeLimitReached && <button className="text-button" onClick={() => navigate('billing')}>Explore Pro for unlimited practice <Icon name="arrow" size={16} /></button>}
+                  <button className="button button-primary" onClick={() => navigate('setup')} disabled={freeLimitReached}><Icon name="plus" size={19} />Start an interview</button>
+                </div>
               </section>
               <section className="stats-grid" aria-label="Practice statistics">
                 <StatCard label="Total interviews" value={dashboard?.total_interviews ?? 0} hint="Practice makes progress" icon="grid" />
@@ -861,7 +886,7 @@ function AuthPage({ providers, error, onDismiss }) {
   return (
     <main className="auth-page">
       <section className="auth-pitch">
-        <button className="auth-brand" onClick={() => { window.location.href = '/' }}><span className="brand-mark"><Icon name="spark" size={22} /></span>Interview<span>AI</span></button>
+        <button className="auth-brand" onClick={() => { window.location.href = '/' }}><BrandMark />Interview<span>AI</span></button>
         <div className="auth-pitch-content">
           <p className="eyebrow">THE INTERVIEW PRACTICE PLATFORM</p>
           <h1>Train for the interview.<br /><span>Show up ready.</span></h1>
@@ -877,10 +902,10 @@ function AuthPage({ providers, error, onDismiss }) {
       </section>
       <section className="auth-panel-wrap">
         <div className="auth-panel">
-          <div className="auth-mobile-brand"><span className="brand-mark"><Icon name="spark" size={20} /></span>Interview<span>AI</span></div>
+          <div className="auth-mobile-brand"><BrandMark />Interview<span>AI</span></div>
           <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p>
           <h2>{accountType === 'student' ? 'Welcome to your practice room.' : 'Create your company workspace.'}</h2>
-          <p className="auth-panel-copy">Sign in securely with an account you already use.</p>
+          <p className="auth-panel-copy">Use your account to continue. New here? We’ll create your workspace on your first sign-in.</p>
           <div className="auth-account-toggle">
             <button type="button" className={accountType === 'student' ? 'selected' : ''} onClick={() => { setAccountType('student'); setCompanyNameError('') }}>Student</button>
             <button type="button" className={accountType === 'company' ? 'selected' : ''} onClick={() => setAccountType('company')}>Company</button>
@@ -915,9 +940,15 @@ function AuthPage({ providers, error, onDismiss }) {
               )
             })}
           </div>
+          {!providers.some((provider) => provider.enabled) && (
+            <div className="auth-setup-note" role="status">
+              <strong>Sign-in setup is not finished yet.</strong>
+              <span>The site owner must configure OAuth apps before Google, GitHub, or Apple accounts can connect.</span>
+            </div>
+          )}
           <div className="auth-divider"><span />SECURE SIGN-IN<span /></div>
           <p className="auth-terms">By continuing, you agree to the Terms of Service and Privacy Policy. Your company’s workspace and candidate records are isolated from other organizations.</p>
-          <div className="auth-pricing-note"><strong>Start free</strong><span>3 practice interviews monthly · Upgrade to Pro anytime</span></div>
+          <div className="auth-pricing-note"><strong>Start free</strong><span>3 practice interviews every 14 days · Upgrade to Pro anytime</span></div>
         </div>
       </section>
     </main>
@@ -937,7 +968,7 @@ function BillingPage({ catalog, user, saving, onUpgrade, onCancel }) {
     <section className="billing-layout">
       <div className="billing-heading"><p className="eyebrow">SIMPLE, TRANSPARENT PRICING</p><h1>Choose your next level.</h1><p>Start free. Upgrade when you’re ready to practice without limits.</p><div className="billing-cadence">Monthly plans <span>·</span> Cancel anytime</div></div>
       <div className="pricing-grid">
-        <article className="panel pricing-card"><div className="pricing-tier">START HERE</div><h2>Free</h2><p className="pricing-description">Build a consistent practice habit.</p><div className="pricing-price"><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(0)}</strong><span>/ month</span></div><ul><li><Icon name="check" size={16} />3 interviews every 30 days</li><li><Icon name="check" size={16} />All three question tracks</li><li><Icon name="check" size={16} />AI answer feedback</li><li><Icon name="check" size={16} />Progress history</li></ul><button className="button button-outline" disabled>{user.plan === 'free' ? 'Your current plan' : 'Free plan'}</button></article>
+        <article className="panel pricing-card"><div className="pricing-tier">START HERE</div><h2>Free</h2><p className="pricing-description">Build a consistent practice habit.</p><div className="pricing-price"><strong>{new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(0)}</strong><span>/ month</span></div><ul><li><Icon name="check" size={16} />3 interviews every 14 days</li><li><Icon name="check" size={16} />All three question tracks</li><li><Icon name="check" size={16} />AI answer feedback</li><li><Icon name="check" size={16} />Progress history</li></ul><button className="button button-outline" disabled>{user.plan === 'free' ? 'Your current plan' : 'Free plan'}</button></article>
         <article className="panel pricing-card pricing-featured"><div className="pricing-popular">MOST POPULAR</div><div className="pricing-tier">FOR SERIOUS PREP</div><h2>Pro</h2><p className="pricing-description">Practice as often as you need.</p><div className="pricing-price"><strong>{price}</strong><span>/ month</span></div><ul><li><Icon name="check" size={16} />Unlimited interview practice</li><li><Icon name="check" size={16} />All question tracks and difficulty levels</li><li><Icon name="check" size={16} />Full interview and answer history</li><li><Icon name="check" size={16} />AI feedback on every answer</li></ul><button className="button button-primary" disabled={saving || user.plan === 'pro' || !proPlan?.configured} onClick={onUpgrade}>{saving ? 'Opening secure checkout…' : user.plan === 'pro' ? 'You’re on Pro' : proPlan?.configured ? 'Upgrade securely' : 'Billing setup required'}</button>{user.plan === 'pro' && <button className="button button-outline" disabled={saving} onClick={onCancel}>Cancel at period end</button>}<small className="billing-provider-note">Secure recurring checkout powered by Razorpay.</small></article>
         <article className="panel pricing-card"><div className="pricing-tier">FOR TEAMS</div><h2>Company</h2><p className="pricing-description">Bring structured candidate practice to your team.</p><div className="company-price"><strong>Custom</strong><span>Built around your hiring needs</span></div><ul><li><Icon name="check" size={16} />Private company workspace</li><li><Icon name="check" size={16} />Invite-only student access</li><li><Icon name="check" size={16} />Shared candidate progress</li><li><Icon name="check" size={16} />Dedicated onboarding</li></ul>{companyContact ? <a className="button button-outline" href={`mailto:${companyContact}?subject=InterviewAI%20Company%20Plan`}>Contact sales</a> : <button className="button button-outline" disabled>Contact sales · email not configured</button>}</article>
       </div>

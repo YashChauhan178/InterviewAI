@@ -6,6 +6,9 @@ button { cursor: pointer; }
 .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 5; width: 248px; box-sizing: border-box; padding: 28px 17px 16px; background: #fff; border-right: 1px solid #e9ece8; display: flex; flex-direction: column; }
 .brand { display: flex; align-items: center; gap: 10px; border: 0; background: none; padding: 0 10px; color: #20352e; font-size: 21px; font-weight: 750; letter-spacing: -1px; text-align: left; }
 .brand-mark { width: 35px; height: 35px; background: #d8f27d; color: #20352e; border-radius: 11px; display: grid; place-items: center; }
+.brand-mark svg { width: 23px; height: 23px; }
+.brand-mark svg path { stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.65; }
+.brand-mark svg circle { fill: currentColor; }
 .brand-ai { color: #7da52a; }
 .workspace-label, .eyebrow { color: #919992; font-size: 10px; font-weight: 750; letter-spacing: 1.3px; }
 .workspace-label { margin: 48px 10px 12px; }
@@ -837,6 +840,14 @@ h1 { margin-bottom: 13px; color: #27362e; font-size: clamp(30px, 3vw, 39px); lin
 .welcome-row { position: relative; overflow: hidden; min-height: 196px; padding: 30px 34px; border: 1px solid #dfe8fb; border-radius: 18px; background: linear-gradient(112deg, #f1f6ff 0%, #f6f7ff 58%, #eaf3ff 100%); }
 .welcome-row::after { position: absolute; top: -110px; right: 12%; width: 290px; height: 290px; border: 1px solid #7ba1ee1c; border-radius: 50%; box-shadow: 0 0 0 35px #7ba1ee0a, 0 0 0 70px #7ba1ee08; content: ""; pointer-events: none; }
 .welcome-row > div, .welcome-row > button { position: relative; z-index: 1; }
+.welcome-actions { display: grid; justify-items: end; gap: 14px; }
+.free-session-meter { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid #dfe8fb; border-radius: 11px; background: #ffffffc9; }
+.free-session-dots { display: flex; gap: 4px; }
+.free-session-dots i { width: 8px; height: 8px; border-radius: 50%; background: #dce3ee; }
+.free-session-dots i.available { background: #4776de; box-shadow: 0 0 0 3px #4776de16; }
+.free-session-meter strong, .free-session-meter small { display: block; }
+.free-session-meter strong { color: #354765; font-size: 10px; }
+.free-session-meter small { margin-top: 3px; color: #8391a7; font-size: 8px; }
 .welcome-row .eyebrow { color: #6583bb; }
 h1 { color: #1d2d49; }
 .welcome-copy { color: #6c7d97; }
@@ -953,6 +964,7 @@ h1 { color: #1d2d49; }
   .welcome-row { align-items: flex-start; flex-direction: column; gap: 20px; padding: 25px 22px; }
   .welcome-row h1 { font-size: 30px; }
   .welcome-row::after { right: -120px; }
+  .welcome-actions { justify-items: start; width: 100%; }
   .session-columns { grid-template-columns: 1fr; }
   .session-aside { grid-template-columns: 1fr 1fr; }
   .two-fields { grid-template-columns: 1fr; gap: 3px; }
@@ -1029,6 +1041,8 @@ h1 { color: #1d2d49; }
 .auth-pricing-note strong { color: #416ac0; }
 .auth-error { display: flex; justify-content: space-between; gap: 10px; margin: 12px 0; padding: 10px 12px; border: 1px solid #efd6d2; border-radius: 7px; color: #924e45; background: #fff6f4; font-size: 10px; }
 .auth-error button { border: 0; color: inherit; background: transparent; font-size: 15px; }
+.auth-setup-note { display: grid; gap: 4px; margin-top: 12px; padding: 11px 12px; border: 1px solid #f0dfbd; border-radius: 8px; color: #806334; background: #fffaf0; font-size: 9px; line-height: 1.55; }
+.auth-setup-note strong { font-size: 10px; }
 .billing-layout, .organization-layout { max-width: 1060px; margin: 0 auto; }
 .billing-heading { margin: 10px 0 31px; text-align: center; }
 .billing-heading .eyebrow { color: #6180bc; }

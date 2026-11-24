@@ -47,6 +47,8 @@ QUESTION_CATEGORIES = (
 )
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024
+FREE_INTERVIEW_LIMIT = 3
+FREE_INTERVIEW_WINDOW_DAYS = 14
 MCP_STATUS_CACHE_TTL_SECONDS = 30
 logger = logging.getLogger(__name__)
 SESSION_SECRET = os.getenv("INTERVIEWAI_SESSION_SECRET")
@@ -599,6 +601,27 @@ def require_current_user(request: Request) -> dict[str, Any]:
     }
 
 
+def free_interview_usage(connection: Any, user_id: str) -> tuple[int, str | None]:
+    window_start = (
+        datetime.now(timezone.utc) - timedelta(days=FREE_INTERVIEW_WINDOW_DAYS)
+    ).isoformat()
+    usage = connection.execute(
+        """
+        SELECT COUNT(*) AS interview_count, MIN(created_at) AS oldest_created_at
+        FROM interviews WHERE user_id = ? AND created_at >= ?
+        """,
+        (user_id, window_start),
+    ).fetchone()
+    oldest_created_at = usage["oldest_created_at"]
+    reset_at = None
+    if oldest_created_at is not None:
+        reset_at = (
+            datetime.fromisoformat(str(oldest_created_at))
+            + timedelta(days=FREE_INTERVIEW_WINDOW_DAYS)
+        ).isoformat()
+    return int(usage["interview_count"]), reset_at
+
+
 def add_or_get_oauth_user(
     provider: str,
     provider_user_id: str,
@@ -894,14 +917,31 @@ def auth_me(user: dict[str, Any] = Depends(require_current_user)) -> dict[str, A
             """,
             (user["id"],),
         ).fetchall()
+        interview_count, free_reset_at = (
+            free_interview_usage(connection, str(user["id"]))
+            if user["is_personal"]
+            else (0, None)
+        )
     active_subscription = next(
         (row for row in subscription if row["status"] in {"active", "authenticated"}),
         None,
     )
+    plan = "pro" if active_subscription and active_subscription["status"] == "active" else "free"
     return {
         **user,
-        "plan": "pro" if active_subscription and active_subscription["status"] == "active" else "free",
+        "plan": plan,
         "subscription_status": active_subscription["status"] if active_subscription else "free",
+        "free_interviews_remaining": (
+            max(0, FREE_INTERVIEW_LIMIT - interview_count)
+            if user["is_personal"] and plan == "free"
+            else None
+        ),
+        "free_interviews_reset_at": (
+            free_reset_at
+            if user["is_personal"] and plan == "free" and interview_count >= FREE_INTERVIEW_LIMIT
+            else None
+        ),
+        "free_interview_window_days": FREE_INTERVIEW_WINDOW_DAYS,
         "organizations": organizations,
     }
 
@@ -1620,16 +1660,7 @@ async def create_interview(
 ) -> dict[str, Any]:
     if user["is_personal"]:
         with connect_db() as connection:
-            usage = connection.execute(
-                """
-                SELECT COUNT(*) AS interview_count FROM interviews
-                WHERE user_id = ? AND created_at >= ?
-                """,
-                (
-                    user["id"],
-                    (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),
-                ),
-            ).fetchone()
+            interview_count, _ = free_interview_usage(connection, str(user["id"]))
             pro = connection.execute(
                 """
                 SELECT 1 FROM billing_subscriptions
@@ -1637,10 +1668,13 @@ async def create_interview(
                 """,
                 (user["id"],),
             ).fetchone()
-        if pro is None and int(usage["interview_count"]) >= 3:
+        if pro is None and interview_count >= FREE_INTERVIEW_LIMIT:
             raise HTTPException(
                 status_code=402,
-                detail="Free plan limit reached. Upgrade to Pro for unlimited monthly practice.",
+                detail=(
+                    "You’ve used all 3 free interviews in the last 14 days. "
+                    "Upgrade to Pro or wait for your oldest interview to leave the 14-day window."
+                ),
             )
     interview_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()

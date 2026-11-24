@@ -31,6 +31,7 @@ The development setup is designed for Windows and uses a local [Ollama](https://
 - **Three focused practice tracks:** Basic Aptitude, Logical Reasoning, and Coding Rounds & Interview. Choose Easy, Medium, or Hard; coding prompts include examples and are answered in a dedicated language-aware editor.
 - **Student records:** Save each attempt with a student name and optional student ID, alongside its questions, answers, scores, and feedback.
 - **Student accounts and Pro billing:** Sign in with configured Google, GitHub, or Apple OAuth; upgrade to Pro through a configured Razorpay monthly subscription.
+- **Free practice allowance:** Get 3 free interviews in each rolling 14-day window. Your account shows remaining sessions and blocks new sessions until an interview ages out.
 - **Company workspaces:** Create isolated organization workspaces, invite students using one-time links, and review workspace candidate progress.
 - **Resume and job-description parsing:** Upload PDF, TXT, or Markdown files for local text extraction. Analyze job requirements and compare them with resume skills.
 - **Structured answer feedback:** Evaluate answers for relevance, completeness, clarity, and technical accuracy. Review the score, strengths, improvement suggestions, and a suggested answer.
@@ -39,6 +40,12 @@ The development setup is designed for Windows and uses a local [Ollama](https://
 - **Local AI help chat:** Ask the configured Ollama model for help with interview preparation or the application. Recent chat context is limited and is not saved to the interview database.
 - **Document analysis through MCP:** The local InterviewAI MCP server exposes tools for extracting job requirements and comparing a candidate resume with a job description.
 - **Responsive interface:** Includes dashboard metrics, light/dark themes, progress tracking, accessible focus states, and clear loading and error messages.
+
+### Current sign-in experience
+
+![InterviewAI desktop sign-in](docs/screenshots/signin-desktop.png)
+
+![InterviewAI mobile sign-in](docs/screenshots/signin-mobile.png)
 
 ## How it works
 
@@ -215,7 +222,7 @@ backend\.venv\Scripts\python.exe -m uvicorn --app-dir backend main:app --reload
 
 ## SaaS configuration (OAuth, billing, and workspaces)
 
-Authentication and payment flows are implemented but remain unavailable until the operator registers OAuth applications and configures Razorpay. Set these values in the backend process environment; never put secrets in frontend code, source control, or screenshots.
+Authentication and payment flows remain unavailable until the operator registers OAuth applications and configures Razorpay. Google, GitHub, and Apple sign-in automatically creates an account the first time a verified provider identity is used. InterviewAI does not provide password-based sign-in. Set OAuth values in the backend process environment; never put secrets in frontend code, source control, screenshots, or chat messages.
 
 | Variable | Purpose |
 | --- | --- |
@@ -241,6 +248,18 @@ Register each provider callback URL exactly as:
 {INTERVIEWAI_API_PUBLIC_URL}/api/auth/github/callback
 {INTERVIEWAI_API_PUBLIC_URL}/api/auth/apple/callback
 ```
+
+For local Google-account testing with the default Vite proxy, configure the Google OAuth consent screen and create a **Web application** OAuth client in Google Cloud Console. Add `http://localhost:5173` as an authorized JavaScript origin and `http://localhost:5173/api/auth/google/callback` as an authorized redirect URI. Add your Google account to the consent screen's test users while the app remains in testing mode. Then set the client ID and secret in the same PowerShell window that starts the backend and restart it so the OAuth client is registered:
+
+```powershell
+$env:GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
+$env:GOOGLE_CLIENT_SECRET = "your-client-secret"
+$env:INTERVIEWAI_PUBLIC_URL = "http://localhost:5173"
+$env:INTERVIEWAI_API_PUBLIC_URL = "http://localhost:5173"
+$env:INTERVIEWAI_SESSION_SECRET = "replace-with-a-long-random-secret"
+```
+
+Keep the client secret private. Never paste it into source files, screenshots, or chat. For production, register the exact HTTPS frontend/API callback origins instead; temporary tunnel hostnames expire and are unsuitable as permanent OAuth callbacks.
 
 In Razorpay, create a monthly plan with the same configured amount/currency and register the webhook endpoint `{INTERVIEWAI_API_PUBLIC_URL}/api/billing/webhook` for subscription events. Configure the webhook secret in the backend. The backend verifies webhook signatures and only grants Pro after an activation event. Test the complete flow with Razorpay test credentials before enabling live credentials.
 
